@@ -243,7 +243,7 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
 
 def _require(attr: str, label: str) -> Callable[[Request], T]:
     """Create a FastAPI dependency that returns ``app.state.<attr>`` or 503."""
-
+    """ 返回一个函数，该函数从 ``app.state`` 中获取指定属性，如果属性不存在则抛出 HTTP 503异常。"""
     def dep(request: Request) -> T:
         val = getattr(request.app.state, attr, None)
         if val is None:
