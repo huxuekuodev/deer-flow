@@ -268,6 +268,7 @@ class TokenUsageMiddleware(AgentMiddleware):
     """Logs token usage from model responses and annotates the AI step."""
 
     def _apply(self, state: AgentState) -> dict | None:
+        # 获取messages列表
         messages = state.get("messages", [])
         if not messages:
             return None

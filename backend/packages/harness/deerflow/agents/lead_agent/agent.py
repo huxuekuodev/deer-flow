@@ -313,11 +313,13 @@ def build_middlewares(
     middlewares.append(SkillActivationMiddleware(available_skills=available_skills, app_config=resolved_app_config))
 
     # Add summarization middleware if enabled
+    # 摘要中间件，用于对对话历史进行摘要
     summarization_middleware = _create_summarization_middleware(app_config=resolved_app_config)
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
     # Add TodoList middleware if plan mode is enabled
+    # 任务列表中间件，用于管理多步骤任务
     cfg = _get_runtime_config(config)
     is_plan_mode = cfg.get("is_plan_mode", False)
     todo_list_middleware = _create_todo_list_middleware(is_plan_mode)
@@ -325,10 +327,12 @@ def build_middlewares(
         middlewares.append(todo_list_middleware)
 
     # Add TokenUsageMiddleware when token_usage tracking is enabled
+    # 令牌使用中间件，用于跟踪令牌使用
     if resolved_app_config.token_usage.enabled:
         middlewares.append(TokenUsageMiddleware())
 
-    # Add TitleMiddleware
+    # Add TitleMiddleware (after SummarizationMiddleware)
+    # 标题中间件，用于生成对话标题
     middlewares.append(TitleMiddleware(app_config=resolved_app_config))
 
     # Add MemoryMiddleware (after TitleMiddleware)
@@ -371,6 +375,18 @@ def build_middlewares(
     safety_config = resolved_app_config.safety_finish_reason
     if safety_config.enabled:
         middlewares.append(SafetyFinishReasonMiddleware.from_config(safety_config))
+
+    # LangfuseObservationMiddleware — wraps the LLM call in a custom span
+    # (``llm-decider-check``) that captures system-prompt + current user
+    # question as input and the model's text + tool_calls as output.  It
+    # must run after every middleware that mutates the messages before the
+    # LLM call, and before ClarificationMiddleware so ``after_model`` fires
+    # before any possible interruption.
+    from deerflow.agents.middlewares.langfuse_observation_middleware import (
+        LangfuseObservationMiddleware,
+    )
+
+    middlewares.append(LangfuseObservationMiddleware())
 
     # ClarificationMiddleware should always be last
     middlewares.append(ClarificationMiddleware())

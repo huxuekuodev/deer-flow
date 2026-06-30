@@ -486,6 +486,7 @@ def _needs_budget(result: ToolMessage | Command, config: ToolOutputConfig) -> bo
     if isinstance(result, ToolMessage):
         return _tool_message_over_budget(result, config)
     update = getattr(result, "update", None)
+    # 判断command中单条ToolMessage是否达到阈值
     if isinstance(update, dict):
         for msg in update.get("messages", []):
             if isinstance(msg, ToolMessage) and _tool_message_over_budget(msg, config):
