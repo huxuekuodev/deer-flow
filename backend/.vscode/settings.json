@@ -1,11 +1,77 @@
 {
-  "window.title": "${activeEditorShort}${separator}${separator}deer-flow/backend",
   "[python]": {
-    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "ms-python.black-formatter",
     "editor.codeActionsOnSave": {
-      "source.fixAll": "explicit",
       "source.organizeImports": "explicit"
     },
-    "editor.defaultFormatter": "charliermarsh.ruff"
-  }
+    "editor.formatOnSave": true
+  },
+
+  // ⭐ Black 和 ruff line-length 保持一致（ruff.toml: line-length = 240）
+  "black-formatter.args": ["--line-length", "240"],
+
+  "python.languageServer": "None",
+
+  "files.exclude": {
+    "**/.venv": true
+  },
+  "search.exclude": {
+    "**/.venv": true
+  },
+
+  "python.analysis.autoImportCompletions": true,
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.indexing": true,
+  "basedpyright.disableLanguageServices": true,
+  "workbench.productIconTheme": "dusk-office-product",
+  "dbcode.connections": [
+    {
+      "connectionId": "gl0jJD3Xftu3yRG0ZSnjx",
+      "name": "82.156.200.4",
+      "driver": "mysql",
+      "color": "#33B8FF",
+      "connectionType": "host",
+      "host": "82.156.200.4",
+      "port": 3306,
+      "ssl": false,
+      "authMethod": "password",
+      "username": "atguigu",
+      "password": "",
+      "savePassword": "secretStorage",
+      "database": "dw",
+      "readOnly": false,
+      "postConnectionSqlType": "inline",
+      "connectionTimeout": 30,
+      "pinnedConnectionTimeout": "0",
+      "driverOptions": {
+        "retrievePublickey": true,
+        "disableMultiStatements": false,
+        "permitLocalInfile": false
+      },
+      "introspection": {
+        "progressive": false
+      }
+    },
+    {
+      "connectionId": "HuoguFSOEtIEe095-3xDO",
+      "name": "data_agent_es",
+      "driver": "elasticsearch",
+      "color": "#F00019",
+      "host": "82.156.200.4",
+      "port": 9200,
+      "ssl": false,
+      "authMethod": "password",
+      "savePassword": "secretStorage",
+      "introspection": {
+        "progressive": false
+      },
+      "connectionType": "host"
+    }
+  ],
+  "workbench.colorCustomizations": {},
+  "dbcode.resultLocation": "below",
+  "workbench.editorAssociations": {
+    "*.md": "md-live.editor"
+  },
+  "gitai.enabled": false
 }
