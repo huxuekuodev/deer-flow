@@ -378,10 +378,9 @@ def build_middlewares(
 
     # LangfuseObservationMiddleware — wraps the LLM call in a custom span
     # (``llm-decider-check``) that captures system-prompt + current user
-    # question as input and the model's text + tool_calls as output.  It
-    # must run after every middleware that mutates the messages before the
-    # LLM call, and before ClarificationMiddleware so ``after_model`` fires
-    # before any possible interruption.
+    # question as input and the model's text + tool_calls as output.  Uses
+    # ``wrap_model_call`` so ``start_as_current_observation`` runs as a
+    # proper context manager around the actual model invoke.
     from deerflow.agents.middlewares.langfuse_observation_middleware import (
         LangfuseObservationMiddleware,
     )
