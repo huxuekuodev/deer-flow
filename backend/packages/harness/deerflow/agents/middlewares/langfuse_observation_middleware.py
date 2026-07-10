@@ -25,24 +25,14 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import override
 
 from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langfuse import Langfuse
-
-if sys.version_info >= (3, 12):
-    from typing import override
-elif TYPE_CHECKING:
-    from typing import override as _override
-
-    override = _override
-else:
-    from typing import override
 
 logger = logging.getLogger(__name__)
 
@@ -189,11 +179,12 @@ class LangfuseObservationMiddleware(AgentMiddleware[AgentState]):
             )
 
             output = self._resolve_output(response)
-            self._lf.span(
+            observation = self._lf.start_observation(
                 name="llm-decider-check",
                 input=input_data,
                 output=output or {},
             )
+            observation.end()
         except Exception as exc:
             logger.warning("Langfuse sync observation failed: %s", exc)
 

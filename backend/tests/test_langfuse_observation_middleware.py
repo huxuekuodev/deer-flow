@@ -14,9 +14,7 @@ import types
 from typing import Any
 
 import pytest
-
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-
 
 # ------------------------------------------------------------------
 # Bootstrap: import the middleware module with mocked dependencies
@@ -106,12 +104,16 @@ class FakeLangfuseClient:
     def __init__(self) -> None:
         self.spans: list[FakeSpan] = []
 
-    def span(self, *, name: str, input: dict) -> FakeSpan:
+    def start_observation(self, *, name: str, input: dict | None = None, output: dict | None = None, **kwargs: Any) -> FakeSpan:
         s = FakeSpan()
         s.name = name
         s.input = input
+        s.output = output
         self.spans.append(s)
         return s
+
+    def get_current_trace_id(self) -> str | None:
+        return "fake-trace-id"
 
 
 @pytest.fixture
