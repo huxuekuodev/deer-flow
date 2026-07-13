@@ -25,8 +25,6 @@ from typing import Any
 
 from deerflow.config import get_enabled_tracing_providers
 
-
-
 # Lazy-imported below to avoid a circular import: ``deerflow.runtime`` eagerly
 # imports the run worker, which in turn needs ``deerflow.tracing``.
 _DEFAULT_TRACE_NAME = "lead-agent"

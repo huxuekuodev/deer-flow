@@ -19,7 +19,6 @@ import threading
 from collections.abc import Awaitable, Callable
 from typing import Any, override
 
-from deerflow.agents.lead_agent.prompt import langfuseClient
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.todo import Todo
 from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse, hook_config

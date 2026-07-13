@@ -229,7 +229,7 @@ def _build_subagent_section(max_concurrent: int, *, app_config: AppConfig | None
         if bash_available
         else '# User asks: "Read the README"\n# Thinking: Single straightforward file read\n# → Execute directly\n\nread_file("/mnt/user-data/workspace/README.md")  # Direct execution, not task()'
     )
-    return langfuseClient.get_prompt("subagent_prompt").compile(n=n,available_subagents=available_subagents,direct_tool_examples=direct_tool_examples,direct_execution_example=direct_execution_example)
+    return langfuseClient.get_prompt("subagent_prompt").compile(n=n, available_subagents=available_subagents, direct_tool_examples=direct_tool_examples, direct_execution_example=direct_execution_example)
 
 
 def _get_memory_context(agent_name: str | None = None, *, app_config: AppConfig | None = None) -> str:
@@ -402,7 +402,7 @@ def apply_prompt_template(
     app_config: AppConfig | None = None,
     deferred_names: frozenset[str] = frozenset(),
 ) -> str:
-    
+
     # Include subagent section only if enabled (from runtime parameter)
     n = max_concurrent_subagents
     subagent_section = _build_subagent_section(n, app_config=app_config) if subagent_enabled else ""

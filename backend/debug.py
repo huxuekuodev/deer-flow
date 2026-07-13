@@ -16,8 +16,8 @@ Usage:
 """
 
 import asyncio
-import uuid
 import logging
+import uuid
 
 from dotenv import load_dotenv
 
@@ -101,7 +101,7 @@ async def main():
             "is_plan_mode": True,
             # Uncomment to use a specific model
             "model_name": "kimi-k2.5",
-            "trace_id":trace_id,
+            "trace_id": trace_id,
         }
     }
 

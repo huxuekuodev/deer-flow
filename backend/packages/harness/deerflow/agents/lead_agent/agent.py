@@ -22,6 +22,10 @@ from __future__ import annotations
 
 import logging
 
+from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.runnables import RunnableConfig
+
 from deerflow.agents.lead_agent.prompt import apply_prompt_template
 from deerflow.agents.memory.summarization_hook import memory_flush_hook
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
@@ -42,9 +46,6 @@ from deerflow.models import create_chat_model
 from deerflow.skills.tool_policy import filter_tools_by_skill_allowed_tools
 from deerflow.skills.types import Skill
 from deerflow.tracing import build_tracing_callbacks
-from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware
-from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger(__name__)
 
