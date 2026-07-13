@@ -15,7 +15,7 @@ def _create_langsmith_tracer(config) -> Any:
     return LangChainTracer(project_name=config.project)
 
 
-def _create_langfuse_handler(config) -> Any:
+def _create_langfuse_handler(config, *, trace_context: dict[str, str] | None = None) -> Any:
     from langfuse import Langfuse
     from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
 
@@ -26,11 +26,21 @@ def _create_langfuse_handler(config) -> Any:
         public_key=config.public_key,
         host=config.host,
     )
-    return LangfuseCallbackHandler(public_key=config.public_key)
+    kwargs: dict[str, Any] = {"public_key": config.public_key}
+    if trace_context is not None:
+        kwargs["trace_context"] = trace_context
+    return LangfuseCallbackHandler(**kwargs)
 
 
-def build_tracing_callbacks() -> list[Any]:
-    """Build callbacks for all explicitly enabled tracing providers."""
+def build_tracing_callbacks(trace_id: str | None = None) -> list[Any]:
+    """Build callbacks for all explicitly enabled tracing providers.
+
+    Args:
+        trace_id: Optional custom trace ID for Langfuse traces. When provided,
+            the Langfuse ``CallbackHandler`` is created with
+            ``trace_context={"trace_id": trace_id}`` so the resulting trace
+            uses this ID instead of an auto-generated one. Ignored by LangSmith.
+    """
     validate_enabled_tracing_providers()
     enabled_providers = get_enabled_tracing_providers()
     if not enabled_providers:
@@ -47,7 +57,8 @@ def build_tracing_callbacks() -> list[Any]:
                 raise RuntimeError(f"LangSmith tracing initialization failed: {exc}") from exc
         elif provider == "langfuse":
             try:
-                callbacks.append(_create_langfuse_handler(tracing_config.langfuse))
+                trace_context = {"trace_id": trace_id} if trace_id else None
+                callbacks.append(_create_langfuse_handler(tracing_config.langfuse, trace_context=trace_context))
             except Exception as exc:  # pragma: no cover - exercised via tests with monkeypatch
                 raise RuntimeError(f"Langfuse tracing initialization failed: {exc}") from exc
 

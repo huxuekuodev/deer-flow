@@ -79,7 +79,7 @@ def test_build_tracing_callbacks_creates_langsmith_and_langfuse(monkeypatch):
     monkeypatch.setattr(
         tracing_factory,
         "_create_langfuse_handler",
-        lambda cfg: FakeLangfuseHandler(public_key=cfg.public_key),
+        lambda cfg, trace_context=None: FakeLangfuseHandler(public_key=cfg.public_key),
     )
 
     callbacks = tracing_factory.build_tracing_callbacks()
@@ -107,7 +107,7 @@ def test_build_tracing_callbacks_raises_when_enabled_provider_fails(monkeypatch)
             },
         )(),
     )
-    monkeypatch.setattr(tracing_factory, "_create_langfuse_handler", lambda cfg: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(tracing_factory, "_create_langfuse_handler", lambda cfg, trace_context=None: (_ for _ in ()).throw(RuntimeError("boom")))
 
     with pytest.raises(RuntimeError, match="Langfuse tracing initialization failed"):
         tracing_factory.build_tracing_callbacks()
@@ -168,6 +168,55 @@ def test_create_langfuse_handler_initializes_client_before_handler(monkeypatch):
             "handler",
             {
                 "public_key": "pk-lf-test",
+            },
+        ),
+    ]
+
+
+def test_create_langfuse_handler_passes_trace_context(monkeypatch):
+    calls: list[tuple[str, dict]] = []
+
+    class FakeLangfuse:
+        def __init__(self, **kwargs):
+            calls.append(("client", kwargs))
+
+    class FakeCallbackHandler:
+        def __init__(self, **kwargs):
+            calls.append(("handler", kwargs))
+
+    fake_langfuse_module = types.ModuleType("langfuse")
+    fake_langfuse_module.Langfuse = FakeLangfuse
+    fake_langfuse_langchain_module = types.ModuleType("langfuse.langchain")
+    fake_langfuse_langchain_module.CallbackHandler = FakeCallbackHandler
+    monkeypatch.setitem(sys.modules, "langfuse", fake_langfuse_module)
+    monkeypatch.setitem(sys.modules, "langfuse.langchain", fake_langfuse_langchain_module)
+
+    cfg = type(
+        "LangfuseCfg",
+        (),
+        {
+            "secret_key": "sk-lf-test",
+            "public_key": "pk-lf-test",
+            "host": "https://langfuse.example.com",
+        },
+    )()
+
+    tracing_factory._create_langfuse_handler(cfg, trace_context={"trace_id": "my-custom-id"})
+
+    assert calls == [
+        (
+            "client",
+            {
+                "secret_key": "sk-lf-test",
+                "public_key": "pk-lf-test",
+                "host": "https://langfuse.example.com",
+            },
+        ),
+        (
+            "handler",
+            {
+                "public_key": "pk-lf-test",
+                "trace_context": {"trace_id": "my-custom-id"},
             },
         ),
     ]

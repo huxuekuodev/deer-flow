@@ -452,9 +452,11 @@ async def stream_run(thread_id: str, body: RunCreateRequest, request: Request) -
     """
     bridge = get_stream_bridge(request)
     run_mgr = get_run_manager(request)
+    # 创建一个协程任务执行Agent内容，通过bridge发送事件
     record = await start_run(body, thread_id, request)
 
     return StreamingResponse(
+        # 启动一个协程任务，用于处理bridge发送的事件
         sse_consumer(bridge, record, request, run_mgr),
         media_type="text/event-stream",
         headers={

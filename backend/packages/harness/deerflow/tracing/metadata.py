@@ -12,6 +12,11 @@ See ``langfuse/langchain/CallbackHandler.py::_parse_langfuse_trace_attributes``
 and https://langfuse.com/docs/observability/features/sessions for the
 contract. Builders here exist so the gateway/run worker can inject the
 right metadata without leaking Langfuse internals into the call sites.
+
+Note:
+    ``trace_id`` is **not** set via metadata. To pass a custom trace ID,
+    create the ``CallbackHandler`` with ``trace_context={"trace_id": "..."}``
+    — see ``deerflow.tracing.factory.build_tracing_callbacks``.
 """
 
 from __future__ import annotations
@@ -19,6 +24,8 @@ from __future__ import annotations
 from typing import Any
 
 from deerflow.config import get_enabled_tracing_providers
+
+
 
 # Lazy-imported below to avoid a circular import: ``deerflow.runtime`` eagerly
 # imports the run worker, which in turn needs ``deerflow.tracing``.

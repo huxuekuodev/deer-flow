@@ -6,19 +6,13 @@ This creates a named ``observation`` (typed as a ``span``) in Langfuse that a
 **Langfuse Evaluator** can target to verify "did the model correctly decide to
 invoke a tool?".
 
-Timing
-------
-The Langfuse ``CallbackHandler`` (registered at the graph-invocation root in
-``agent.py``) pushes its OTel context when LangGraph calls the model node —
-specifically during ``on_chat_model_start``.  That means inside
-``awrap_model_call`` / ``wrap_model_call``, calling
-``get_current_trace_id()`` **before** ``handler(request)`` will return ``None``
-every time because the OTel context has not been activated yet.
-
-Because of that, the observation cannot wrap ``handler(request)`` with
-``start_as_current_observation`` (a context manager).  Instead we fire the
-model call first, let the OTel context become active, then use the free
-``Langfuse.span(...)`` API to submit the observation.
+Trace ID resolution
+-------------------
+The middleware reads ``trace_id`` from ``request.config["configurable"]["trace_id"]``
+— the same field set by ``client.py`` (via ``_get_runnable_config``) and
+``make_lead_agent`` (from the Gateway request's ``configurable``).  This avoids
+relying on OTel context propagation (which is only active during the model call
+itself, inside Langfuse's ``CallbackHandler.on_chat_model_start/end``).
 """
 
 from __future__ import annotations
@@ -40,14 +34,8 @@ logger = logging.getLogger(__name__)
 class LangfuseObservationMiddleware(AgentMiddleware[AgentState]):
     """Wrap each LLM call with a custom Langfuse span for evaluator analysis.
 
-    Because the OTel context **is only activated** by the Langfuse
-    ``CallbackHandler`` during the actual model invocation
-    (``on_chat_model_start``), we:
-
-    1. Call ``handler(request)`` first — this triggers the model call and
-       pushes the OTel context.
-    2. Then call ``self._lf.span(name="llm-decider-check", ...)`` to submit
-       the observation as a child of the current active trace.
+    Reads ``trace_id`` from ``request.config["configurable"]["trace_id"]``
+    to create the observation under the correct parent trace.
     """
 
     def __init__(self) -> None:
@@ -56,6 +44,17 @@ class LangfuseObservationMiddleware(AgentMiddleware[AgentState]):
     # ------------------------------------------------------------------
     # Static helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_trace_id(request: ModelRequest) -> str | None:
+        """Read the optional custom trace_id from the request's configurable."""
+        request_config = getattr(request, "config", None)
+        if not isinstance(request_config, dict):
+            return None
+        configurable = request_config.get("configurable")
+        if isinstance(configurable, dict):
+            return configurable.get("trace_id")
+        return None
 
     @staticmethod
     def _is_langfuse_enabled() -> bool:
@@ -141,46 +140,31 @@ class LangfuseObservationMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Wrap model invocation — sync path.
-
-        OTel context timing (see class docstring) prevents wrapping
-        ``handler(request)`` with ``start_as_current_observation``, so we
-        submit a free ``Langfuse.span()`` after the model call instead.
-        """
+        """Wrap model invocation — sync path."""
         if not self._is_langfuse_enabled():
-            logger.info("Langfuse observation middleware disabled (sync), falling through")
+            return handler(request)
+
+        trace_id = self._get_trace_id(request)
+        if not trace_id:
             return handler(request)
 
         user_question = self._get_last_user_question(request.messages)
         if not user_question:
-            logger.info("No user question found in sync request, falling through")
             return handler(request)
 
         system_text = self._get_system_text(request.system_message, request.system_prompt)
-
         input_data: dict = {}
         if system_text:
             input_data["system_prompt"] = system_text
         input_data["user_question"] = user_question
 
-        # Fire model call first so the CallbackHandler activates the OTel
-        # context (on_chat_model_start).
         response = handler(request)
 
         try:
-            trace_id = self._lf.get_current_trace_id()
-            if trace_id is None:
-                logger.info("No Langfuse trace after sync model call (likely no tracing active), skipping observation")
-                return response
-
-            logger.info(
-                "Langfuse observation created (sync) trace=%s",
-                trace_id,
-            )
-
             output = self._resolve_output(response)
-            observation = self._lf.start_observation(
+            observation = self._lf.span(
                 name="llm-decider-check",
+                trace_id=trace_id,
                 input=input_data,
                 output=output or {},
             )
@@ -196,40 +180,36 @@ class LangfuseObservationMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """Wrap model invocation — async path (used by Gateway).
-
-        OTel context timing (see class docstring) prevents wrapping
-        ``handler(request)`` with ``start_as_current_observation``, so we
-        submit a free ``Langfuse.span()`` after the model call instead.
-        """
+        """Wrap model invocation — async path (used by Gateway)."""
         if not self._is_langfuse_enabled():
-            logger.info("Langfuse observation middleware disabled (async), falling through")
+            return await handler(request)
+
+        trace_id = self._get_trace_id(request)
+        if not trace_id:
             return await handler(request)
 
         user_question = self._get_last_user_question(request.messages)
         if not user_question:
-            logger.info("No user question found in async request, falling through")
             return await handler(request)
 
         system_text = self._get_system_text(request.system_message, request.system_prompt)
-
         input_data: dict = {}
         if system_text:
             input_data["system_prompt"] = system_text
         input_data["user_question"] = user_question
 
-        # Fire model call first so the CallbackHandler activates the OTel
-        # context (on_chat_model_start).
+        response = await handler(request)
+
         try:
-            response = await handler(request)
-            with self._lf.start_as_current_observation(
+            output = self._resolve_output(response)
+            observation = self._lf.span(
                 name="llm-decider-check",
+                trace_id=trace_id,
                 input=input_data,
-            ) as observation:
-                output = self._resolve_output(response)
-                if output:
-                    observation.update(output=output or {})
+                output=output or {},
+            )
+            observation.end()
         except Exception as exc:
-            logger.error("Langfuse async observation failed: %s", exc)
+            logger.warning("Langfuse async observation failed: %s", exc)
 
         return response

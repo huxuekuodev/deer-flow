@@ -16,6 +16,7 @@ Usage:
 """
 
 import asyncio
+import uuid
 import logging
 
 from dotenv import load_dotenv
@@ -67,6 +68,7 @@ async def main():
 
     from deerflow.config import get_app_config
     from deerflow.config.app_config import apply_logging_level
+    from deerflow.tracing.metadata import inject_langfuse_metadata
 
     app_config = get_app_config()
     apply_logging_level(app_config.log_level)
@@ -90,6 +92,8 @@ async def main():
         print(f"Warning: Failed to initialize MCP tools: {e}")
 
     # Create agent with default config
+    trace_id = uuid.uuid4().hex
+    print(f"自定义trace_id:{trace_id}")
     config = {
         "configurable": {
             "thread_id": "debug-thread-001",
@@ -97,6 +101,7 @@ async def main():
             "is_plan_mode": True,
             # Uncomment to use a specific model
             "model_name": "kimi-k2.5",
+            "trace_id":trace_id,
         }
     }
 
@@ -131,6 +136,14 @@ async def main():
 
             # Invoke the agent
             state = {"messages": [HumanMessage(content=user_input)]}
+            inject_langfuse_metadata(
+                config,
+                thread_id=config["configurable"]["thread_id"],
+                user_id=get_effective_user_id(),
+                assistant_id="lead-agent",
+                model_name=config["configurable"]["model_name"] or "kimi-k2.5",
+                environment="production",
+            )
             result = await agent.ainvoke(state, config=config)
 
             # Print the response

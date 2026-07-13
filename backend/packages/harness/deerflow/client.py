@@ -213,6 +213,8 @@ class DeerFlowClient:
             "is_plan_mode": overrides.get("plan_mode", self._plan_mode),
             "subagent_enabled": overrides.get("subagent_enabled", self._subagent_enabled),
         }
+        if "trace_id" in overrides:
+            configurable["trace_id"] = overrides["trace_id"]
         return RunnableConfig(
             configurable=configurable,
             recursion_limit=overrides.get("recursion_limit", 100),
@@ -598,18 +600,21 @@ class DeerFlowClient:
 
         config = self._get_runnable_config(thread_id, **kwargs)
 
+        # Read optional custom trace_id from caller kwargs.
+        configurable = config.get("configurable") or {}
+        trace_id: str | None = configurable.get("trace_id") or kwargs.get("trace_id")
+
         # Inject tracing callbacks and Langfuse trace metadata at the graph
         # invocation root so the embedded client matches the gateway worker's
         # behaviour: a single ``stream()`` produces one trace with all node /
         # LLM / tool calls nested under it, and the trace carries the reserved
         # ``langfuse_session_id`` / ``langfuse_user_id`` keys that the Langfuse
         # CallbackHandler lifts onto the root trace's ``sessionId`` / ``userId``.
-        tracing_callbacks = build_tracing_callbacks()
+        tracing_callbacks = build_tracing_callbacks(trace_id=trace_id)
         if tracing_callbacks:
             existing_callbacks = list(config.get("callbacks") or [])
             config["callbacks"] = [*existing_callbacks, *tracing_callbacks]
 
-        configurable = config.get("configurable") or {}
         inject_langfuse_metadata(
             config,
             thread_id=thread_id,
