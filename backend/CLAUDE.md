@@ -672,6 +672,53 @@ For models with `supports_vision: true`:
 - Python 3.12+ with type hints
 - Double quotes, space indentation
 
+## LangGraph 开发规范
+
+### 必须使用 LangGraph 官方的 context 注入机制
+
+LangGraph 提供了内置的依赖注入系统：`context_schema` + `Runtime`。**禁止**使用闭包、`functools.partial` 或全局单例来向图节点传递运行时数据（如 `AppConfig`、LLM 实例、客户端等）。
+
+**权威文档**：
+- `StateGraph(context_schema=...)`：https://docs.langchain.com/oss/python/langgraph/graph-api
+- `Runtime` 类及参数注入：https://reference.langchain.com/python/langgraph/runtime/Runtime
+
+**正确写法**：
+
+```python
+from langgraph.graph import StateGraph
+from langgraph.runtime import Runtime
+from dataclasses import dataclass
+
+@dataclass
+class MyContext:
+    app_config: AppConfig
+    plan_llm: BaseChatModel
+
+# 图在模块级别只构建一次
+_AGENT = (
+    StateGraph(ThreadState, context_schema=MyContext)
+    .add_node("my_node", my_node)
+    .set_entry_point("my_node")
+    .compile()
+)
+
+# 节点通过 Runtime 参数接收 context（LangGraph 自动注入）
+def my_node(state: ThreadState, runtime: Runtime[MyContext]) -> dict:
+    ctx = runtime.context                    # 获取上下文
+    llm = ctx.plan_llm                       # 使用依赖
+    ...
+
+# 在调用时传入 context
+agent.astream(input=..., context=MyContext(...))
+```
+
+**关键规则**：
+1. 构建 `StateGraph` 时传入 `context_schema=MyContextType` — 告诉 LangGraph context 的类型
+2. 图在模块级别构建一次，不要在每次调用时重建
+3. 节点函数声明 `runtime: Runtime[MyContextType]` 参数 — LangGraph 自动注入，通过 `runtime.context` 访问
+4. 在 `astream(..., context=my_context_instance)` 传入具体的 context 实例
+5. `config: RunnableConfig` 和 `context` 是不同的概念 — config 用于 LangGraph 内部（thread_id、callbacks），context 用于你的业务依赖
+
 ## Documentation
 
 See `docs/` directory for detailed documentation:

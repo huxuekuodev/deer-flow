@@ -18,6 +18,7 @@ from deerflow.config.checkpointer_config import CheckpointerConfig, load_checkpo
 from deerflow.config.database_config import DatabaseConfig
 from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.config.guardrails_config import GuardrailsConfig, load_guardrails_config_from_dict
+from deerflow.config.langfuse_config import LangfusePromptConfig
 from deerflow.config.loop_detection_config import LoopDetectionConfig
 from deerflow.config.memory_config import MemoryConfig, load_memory_config_from_dict
 from deerflow.config.model_config import ModelConfig
@@ -161,6 +162,11 @@ class AppConfig(BaseModel):
             "stream_bridge",
             field_doc="Stream bridge connecting agent workers to SSE endpoints.",
         ),
+    )
+    langfuse_prompt_config: LangfusePromptConfig = Field(
+        default_factory=LangfusePromptConfig,
+        description="Langfuse prompt configuration.",
+        validation_alias="langfuse_prompt_config",
     )
 
     @field_validator("models", "tools", "tool_groups", mode="before")

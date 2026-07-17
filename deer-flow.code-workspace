@@ -30,6 +30,18 @@
         },
         "justMyCode": false
       },
+            {
+        "name": "Debug Graph Agent",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/backend/graphagent_debug.py",
+        "console": "integratedTerminal",
+        "cwd": "${workspaceFolder}/backend",
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}/backend"
+        },
+        "justMyCode": false
+      },
       {
         "name": "Debug Lead Agent (justMyCode)",
         "type": "debugpy",

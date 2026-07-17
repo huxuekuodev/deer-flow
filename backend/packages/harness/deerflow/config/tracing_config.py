@@ -30,6 +30,10 @@ class LangfuseTracingConfig(BaseModel):
     public_key: str | None = Field(...)
     secret_key: str | None = Field(...)
     host: str = Field(...)
+    plan_prompt_template: str | None = Field(
+        default=None,
+        description="Name of the Langfuse prompt template for plan generation.",
+    )
 
     @property
     def is_configured(self) -> bool:

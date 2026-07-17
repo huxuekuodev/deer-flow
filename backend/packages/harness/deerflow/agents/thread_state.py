@@ -39,7 +39,7 @@ def merge_sandbox(existing: SandboxState | None, new: SandboxState | None) -> Sa
     raise ValueError(f"Conflicting sandbox state updates: {existing_id!r} != {new_id!r}")
 
 
-SandboxStateField = Annotated[NotRequired[SandboxState | None], merge_sandbox]
+SandboxStateField = Annotated[SandboxState | None, merge_sandbox]
 
 
 def merge_artifacts(existing: list[str] | None, new: list[str] | None) -> list[str]:
