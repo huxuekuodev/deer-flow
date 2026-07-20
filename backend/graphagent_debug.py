@@ -62,6 +62,7 @@ async def main():
 
     from deerflow.config import get_app_config
     from deerflow.config.app_config import apply_logging_level
+    from deerflow.tracing import build_tracing_callbacks
 
     app_config = get_app_config()
     apply_logging_level(app_config.log_level)
@@ -76,12 +77,19 @@ async def main():
             "thinking_enabled": True,
             "is_plan_mode": True,
             # Uncomment to use a specific model
-            "model_name": "kimi-k2.5",
+            "model_name": "deepseek-reasoner",
             "trace_id": trace_id,
         }
     }
+    tracing_callbacks = build_tracing_callbacks(trace_id=trace_id)
+    if tracing_callbacks:
+        existing = config.get("callbacks") or []
+        if not isinstance(existing, list):
+            existing = list(existing)
+        config["callbacks"] = [*existing, *tracing_callbacks]
+    # langfuse_client = Langfuse()
     agent = GraphAgent(config)
-    state = {"messages": [HumanMessage(content="我明天要去北京，我想知道北京的天气。")]}
+    state = {"messages": [HumanMessage(content="查询天气")]}
     async for state in agent.astream(state):
         print(state)
 

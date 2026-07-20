@@ -904,7 +904,7 @@ requires-dist = [
     { name = "langchain-mcp-adapters", specifier = ">=0.2.2" },
     { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=0.3.0" },
     { name = "langchain-openai", specifier = ">=1.2.1" },
-    { name = "langfuse", specifier = ">=3.4.1" },
+    { name = "langfuse", specifier = ">=3.5.2" },
     { name = "langgraph", specifier = ">=1.1.9" },
     { name = "langgraph-api", specifier = ">=0.8.1" },
     { name = "langgraph-checkpoint-postgres", marker = "extra == 'postgres'", specifier = ">=3.0.5" },

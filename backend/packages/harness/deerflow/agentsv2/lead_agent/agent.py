@@ -4,11 +4,11 @@ from langgraph.graph import StateGraph
 
 from deerflow.agentsv2 import ThreadState
 from deerflow.agentsv2.lead_agent import GraphContext, create_plan_llm
-from deerflow.agentsv2.nodes import plan_model_node
+from deerflow.agentsv2.nodes import dispatch_node, plan_model_node
 from deerflow.config.app_config import AppConfig, get_app_config
 
 # Build the graph once at module level
-_AGENT: StateGraph = StateGraph(ThreadState, context_schema=GraphContext).add_node("plan_model_node", plan_model_node).set_entry_point("plan_model_node").compile()
+_AGENT: StateGraph = StateGraph(ThreadState, context_schema=GraphContext).add_node("plan_model_node", plan_model_node).add_node("dispatch_node", dispatch_node).set_entry_point("plan_model_node").compile()
 
 
 def get_context(config: RunnableConfig, *, app_config: AppConfig) -> GraphContext:

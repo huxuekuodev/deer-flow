@@ -16,9 +16,10 @@ logger = logging.getLogger(__name__)
 class PlanOutput(BaseModel):
     need_plan: bool = Field(description="判断当前用户需求是否需要拆解为执行计划")
     todo_list: list[TodoItem] = Field(default_factory=list, description="可并行的任务列表")
+    direct_answer: str = Field(default="", description="直接回答用户的问题")
 
 
-def route_after_plan(state: ThreadState) -> str:
+async def route_after_plan(state: ThreadState) -> str:
     """
     声明式路由：根据 state 中的 todo_list 是否为空决定去向
     """
@@ -28,7 +29,7 @@ def route_after_plan(state: ThreadState) -> str:
         return END  # 没计划（直接回答/澄清/失败），直接结束
 
 
-def plan_model_node(state: ThreadState, runtime: Runtime[GraphContext]) -> dict:
+async def plan_model_node(state: ThreadState, runtime: Runtime[GraphContext]) -> dict:
     """
     计划节点：只负责意图识别、任务拆解、校验、SSE推送，并返回状态更新。
     """
@@ -40,7 +41,7 @@ def plan_model_node(state: ThreadState, runtime: Runtime[GraphContext]) -> dict:
     structured_llm = plan_llm.with_structured_output(PlanOutput)
     system_prompt = context.langfuse_client.get_prompt(context.app_config.langfuse_prompt_config.plan_system_prompt).compile(
         subagent_list="""
-       -  weather: 用于查询天气信息的智能体。
+       -  weather: 用于查询天气信息的智能体。 需要提供时间、地点列如 20260701 北京
        -  general: 用于一般任务的智能体。例如 查询时间、计算等。
     """
     )

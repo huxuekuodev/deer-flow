@@ -35,18 +35,6 @@ def _resolve_model_name(requested_model_name: str | None = None, *, app_config: 
     return default_model_name
 
 
-def _get_plan_prompt(app_config: AppConfig) -> str:
-    """
-    获取计划提示词
-    """
-    plan_prompt_template = app_config.langfuse_config.plan_system_prompt
-    if not plan_prompt_template:
-        # Use built-in default prompt when no Langfuse template is configured
-        return ""
-    plan_prompt = langfuse_client.get_prompt(plan_prompt_template).compile()
-    return plan_prompt
-
-
 def create_plan_llm(config: RunnableConfig, *, app_config: AppConfig | None = None):
     """
     创建计划LLM
@@ -55,7 +43,7 @@ def create_plan_llm(config: RunnableConfig, *, app_config: AppConfig | None = No
     resolved_app_config = app_config or get_app_config()
 
     is_bootstrap = cfg.get("is_bootstrap", False)
-    thinking_enabled = cfg.get("thinking_enabled", True)
+    # thinking_enabled = cfg.get("thinking_enabled", False)
 
     requested_model_name: str | None = cfg.get("model_name") or cfg.get("model")
     agent_name = validate_agent_name(cfg.get("agent_name"))
@@ -64,4 +52,15 @@ def create_plan_llm(config: RunnableConfig, *, app_config: AppConfig | None = No
     agent_model_name = agent_config.model if agent_config and agent_config.model else None
     model_name = _resolve_model_name(requested_model_name or agent_model_name, app_config=resolved_app_config)
 
-    return create_chat_model(name=model_name, thinking_enabled=thinking_enabled, app_config=resolved_app_config, attach_tracing=False)
+    # Plan LLM uses with_structured_output() which internally sets tool_choice.
+    # Thinking mode (e.g. DeepSeek) rejects tool_choice with
+    # "Thinking mode does not support this tool_choice".
+    # Force thinking off so structured output works.
+    return create_chat_model(name=model_name, thinking_enabled=False, app_config=resolved_app_config, attach_tracing=False)
+
+
+# 创建执行agent
+def create_react_agent(config: RunnableConfig, *, app_config: AppConfig | None = None):
+    """
+    创建反应agent
+    """
