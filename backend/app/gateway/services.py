@@ -23,18 +23,7 @@ from app.gateway.deps import get_checkpointer, get_run_context, get_run_manager,
 from app.gateway.internal_auth import INTERNAL_SYSTEM_ROLE, get_trusted_internal_owner_user_id
 from app.gateway.utils import sanitize_log_param
 from deerflow.config.app_config import get_app_config
-from deerflow.runtime import (
-    END_SENTINEL,
-    HEARTBEAT_SENTINEL,
-    ConflictError,
-    DisconnectMode,
-    RunManager,
-    RunRecord,
-    RunStatus,
-    StreamBridge,
-    UnsupportedStrategyError,
-    run_agent,
-)
+from deerflow.runtime import END_SENTINEL, HEARTBEAT_SENTINEL, ConflictError, DisconnectMode, RunManager, RunRecord, RunStatus, StreamBridge, UnsupportedStrategyError, run_agent
 from deerflow.runtime.runs.naming import resolve_root_run_name
 from deerflow.runtime.user_context import reset_current_user, set_current_user
 
@@ -369,6 +358,7 @@ async def start_run(
         FastAPI request — used to retrieve singletons from ``app.state``.
     """
     bridge = get_stream_bridge(request)
+    # 任务管理
     run_mgr = get_run_manager(request)
     run_ctx = get_run_context(request)
 

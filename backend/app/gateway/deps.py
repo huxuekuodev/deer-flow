@@ -170,6 +170,7 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
     from deerflow.runtime import make_store, make_stream_bridge
     from deerflow.runtime.checkpointer.async_provider import make_checkpointer
     from deerflow.runtime.events.store import make_run_event_store
+    from deerflow.runtime.msg_history import make_msg_history_pool
 
     async with AsyncExitStack() as stack:
         config = startup_config
@@ -182,6 +183,13 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
 
         app.state.checkpointer = await stack.enter_async_context(make_checkpointer(config))
         app.state.store = await stack.enter_async_context(make_store(config))
+
+        # Initialize msg_history database pool (independent of checkpointer)
+        msg_history_cfg = getattr(config, "msg_history_database", None)
+        if msg_history_cfg is not None:
+            app.state.msg_history_pool = await stack.enter_async_context(make_msg_history_pool(msg_history_cfg))
+        else:
+            app.state.msg_history_pool = None
 
         # Initialize repositories — one get_session_factory() call for all.
         sf = get_session_factory()
@@ -244,6 +252,7 @@ async def langgraph_runtime(app: FastAPI, startup_config: AppConfig) -> AsyncGen
 def _require(attr: str, label: str) -> Callable[[Request], T]:
     """Create a FastAPI dependency that returns ``app.state.<attr>`` or 503."""
     """ 返回一个函数，该函数从 ``app.state`` 中获取指定属性，如果属性不存在则抛出 HTTP 503异常。"""
+
     def dep(request: Request) -> T:
         val = getattr(request.app.state, attr, None)
         if val is None:
@@ -292,6 +301,7 @@ def get_run_context(request: Request) -> RunContext:
         run_events_config=getattr(request.app.state, "run_events_config", None),
         thread_store=get_thread_store(request),
         app_config=get_config(),
+        msg_history_pool=getattr(request.app.state, "msg_history_pool", None),
     )
 
 

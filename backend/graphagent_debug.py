@@ -22,6 +22,7 @@ import uuid
 from dotenv import load_dotenv
 
 from deerflow.agentsv2.lead_agent.agent import GraphAgent
+from deerflow.runtime import RunContext
 
 load_dotenv()
 
@@ -62,6 +63,8 @@ async def main():
 
     from deerflow.config import get_app_config
     from deerflow.config.app_config import apply_logging_level
+    from deerflow.runtime.checkpointer.async_provider import make_checkpointer
+    from deerflow.runtime.msg_history import make_msg_history_pool
     from deerflow.tracing import build_tracing_callbacks
 
     app_config = get_app_config()
@@ -87,11 +90,13 @@ async def main():
         if not isinstance(existing, list):
             existing = list(existing)
         config["callbacks"] = [*existing, *tracing_callbacks]
-    # langfuse_client = Langfuse()
-    agent = GraphAgent(config)
-    state = {"messages": [HumanMessage(content="查询天气")]}
-    async for state in agent.astream(state):
-        print(state)
+
+    async with make_checkpointer(app_config=app_config) as checkpointer, make_msg_history_pool(app_config.msg_history_database) as msg_history_pool:
+        runcontext = RunContext(checkpointer=checkpointer, msg_history_pool=msg_history_pool)
+        agent = GraphAgent(config, runcontext)
+        state = {"messages": [HumanMessage(content="北京，今天的天气")]}
+        async for state in agent.astream(state):
+            print(state)
 
 
 if __name__ == "__main__":

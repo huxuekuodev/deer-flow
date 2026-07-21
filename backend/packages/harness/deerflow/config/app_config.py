@@ -22,6 +22,7 @@ from deerflow.config.langfuse_config import LangfusePromptConfig
 from deerflow.config.loop_detection_config import LoopDetectionConfig
 from deerflow.config.memory_config import MemoryConfig, load_memory_config_from_dict
 from deerflow.config.model_config import ModelConfig
+from deerflow.config.msg_history_config import MsgHistoryDatabaseConfig
 from deerflow.config.reload_boundary import format_field_description
 from deerflow.config.run_events_config import RunEventsConfig
 from deerflow.config.runtime_paths import existing_project_file
@@ -162,6 +163,10 @@ class AppConfig(BaseModel):
             "stream_bridge",
             field_doc="Stream bridge connecting agent workers to SSE endpoints.",
         ),
+    )
+    msg_history_database: MsgHistoryDatabaseConfig | None = Field(
+        default=None,
+        description="聊天记录存储数据库配置（独立于 checkpointer，只存 message_history 表）。仅支持 postgres。",
     )
     langfuse_prompt_config: LangfusePromptConfig = Field(
         default_factory=LangfusePromptConfig,
