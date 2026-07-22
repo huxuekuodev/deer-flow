@@ -1,16 +1,16 @@
-import logging
-
-from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.config import get_stream_writer
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer  # 用于向 custom 通道发射数据
 from langgraph.graph import END
 from langgraph.runtime import Runtime
 from pydantic import BaseModel, Field
 
 from deerflow.agentsv2 import ThreadState
 from deerflow.agentsv2.lead_agent import GraphContext
+from deerflow.agentsv2.nodes.constants import THINK_MES
 from deerflow.agentsv2.thread_state import TodoItem
-
-logger = logging.getLogger(__name__)
+from deerflow.core.context import trace_id_ctx_var
+from deerflow.core.log import logger
 
 
 class PlanOutput(BaseModel):
@@ -29,13 +29,14 @@ async def route_after_plan(state: ThreadState) -> str:
         return END  # 没计划（直接回答/澄清/失败），直接结束
 
 
-async def plan_model_node(state: ThreadState, runtime: Runtime[GraphContext]) -> dict:
+async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: Runtime[GraphContext]) -> dict:
     """
     计划节点：只负责意图识别、任务拆解、校验、SSE推送，并返回状态更新。
     """
     context = runtime.context
     plan_llm = context.plan_llm
     writer = get_stream_writer()
+    writer({"type": THINK_MES, "messages": "助手开始规划任务", "trace_id": trace_id_ctx_var.get()})
 
     available_agents = ["weather", "general"]
     structured_llm = plan_llm.with_structured_output(PlanOutput)
@@ -82,19 +83,19 @@ async def plan_model_node(state: ThreadState, runtime: Runtime[GraphContext]) ->
                 break
             else:
                 error_msg = f"第 {attempt} 次尝试失败。以下 agent 不存在: {invalid_agents}。可用的 agent 是: {available_agents}。请重新规划。"
-                full_messages.append(HumanMessage(content=error_msg))
+                full_messages.append(ToolMessage(content=error_msg))
 
         except Exception as e:
-            logger.error(f"第 {attempt} 次解析失败: {str(e)}")
+            logger.error(f"第 {attempt} 次解析失败: {str(e)}", extra={"trace_id": trace_id_ctx_var.get()})
             error_msg = f"第 {attempt} 次解析失败: {str(e)}。请重新生成。"
-            full_messages.append(HumanMessage(content=error_msg))
+            full_messages.append(ToolMessage(content=error_msg))
 
     # --- 重试结束后的分支处理 ---
 
     # 情况 1：重试 3 次仍然失败，降级处理
     if attempt == max_retries and (not need_plan_flag or not valid_todo_list) and not direct_answer_content:
-        writer({"type": "plan_error", "message": "任务规划失败，请重试。"})
         # 返回空 todo_list，条件边会据此路由到 END
+        logger.error("计划节点重试 3 次仍然失败，无法生成有效 TODO。", extra={"trace_id": trace_id_ctx_var.get()})
         return {"todo_list": [], "messages": [AIMessage(content="抱歉，我在处理时遇到了困难，请提供更详细的指令。")]}
 
     # 情况 2：不需要生成 TODO（直接回答 / 澄清问题）
@@ -104,7 +105,7 @@ async def plan_model_node(state: ThreadState, runtime: Runtime[GraphContext]) ->
 
     # 情况 3：成功生成并校验通过 TODO
     for index, todo_item in enumerate(valid_todo_list):
-        sse_event = {"type": "plan_step_created", "step": index + 1, "total_steps": len(valid_todo_list), "tasks": todo_item.model_dump(), "step_status": "pending"}
+        sse_event = {"type": THINK_MES, "step": index + 1, "total_steps": len(valid_todo_list), "tasks": todo_item.model_dump(), "step_status": "pending", "trace_id": trace_id_ctx_var.get()}
         writer(sse_event)
 
     summary_message = AIMessage(content=f"我已经为您生成了执行计划，共包含 {len(valid_todo_list)} 个阶段。即将开始执行...")

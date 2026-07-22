@@ -11,24 +11,7 @@ from app.gateway.auth_middleware import AuthMiddleware
 from app.gateway.config import get_gateway_config
 from app.gateway.csrf_middleware import CSRFMiddleware, get_configured_cors_origins
 from app.gateway.deps import langgraph_runtime
-from app.gateway.routers import (
-    agents,
-    artifacts,
-    assistants_compat,
-    auth,
-    channel_connections,
-    channels,
-    feedback,
-    mcp,
-    memory,
-    models,
-    runs,
-    skills,
-    suggestions,
-    thread_runs,
-    threads,
-    uploads,
-)
+from app.gateway.routers import agents, artifacts, assistants_compat, auth, channel_connections, channels, feedback, mcp, memory, models, runs, skills, suggestions, thread_runs, threads, uploads
 from deerflow.config import app_config as deerflow_app_config
 from deerflow.config.app_config import apply_logging_level
 
@@ -343,11 +326,15 @@ This gateway provides runtime endpoints for agent runs plus custom endpoints for
         ],
     )
 
+    from app.gateway.trace_middleware import TraceMiddleware
+
     # Auth: reject unauthenticated requests to non-public paths (fail-closed safety net)
     app.add_middleware(AuthMiddleware)
 
     # CSRF: Double Submit Cookie pattern for state-changing requests
     app.add_middleware(CSRFMiddleware)
+
+    app.add_middleware(TraceMiddleware)
 
     # CORS: the unified nginx endpoint is same-origin by default. Split-origin
     # browser clients must opt in with this explicit Gateway allowlist so CORS

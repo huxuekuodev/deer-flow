@@ -19,6 +19,7 @@ from deerflow.config.database_config import DatabaseConfig
 from deerflow.config.extensions_config import ExtensionsConfig
 from deerflow.config.guardrails_config import GuardrailsConfig, load_guardrails_config_from_dict
 from deerflow.config.langfuse_config import LangfusePromptConfig
+from deerflow.config.logging_config import LoggingConfig
 from deerflow.config.loop_detection_config import LoopDetectionConfig
 from deerflow.config.memory_config import MemoryConfig, load_memory_config_from_dict
 from deerflow.config.model_config import ModelConfig
@@ -99,6 +100,10 @@ class AppConfig(BaseModel):
             "log_level",
             field_doc="Logging level for deerflow and app modules (debug/info/warning/error); third-party libraries are not affected.",
         ),
+    )
+    logging: LoggingConfig = Field(
+        default_factory=LoggingConfig,
+        description="Loguru 日志输出配置（控制台 + 文件）",
     )
     token_usage: TokenUsageConfig = Field(default_factory=TokenUsageConfig, description="Token usage tracking configuration")
     models: list[ModelConfig] = Field(default_factory=list, description="Available models")
