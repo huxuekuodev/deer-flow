@@ -1,114 +1,160 @@
-from langchain_core.messages import AIMessage, ToolMessage
+"""
+PLAN 节点：意图识别 + 任务拆解。
+
+工作方式：
+  1. 以结构化输出生成 todo_list
+  2. 手动构造 AIMessage.tool_calls（第一阶段的任务）
+  3. ToolNode 自动读取 tool_calls 并执行
+"""
+
+import datetime
+import uuid
+
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.config import get_stream_writer  # 用于向 custom 通道发射数据
-from langgraph.graph import END
+from langgraph.config import get_stream_writer
 from langgraph.runtime import Runtime
+from lxml import etree
 from pydantic import BaseModel, Field
 
 from deerflow.agentsv2 import ThreadState
 from deerflow.agentsv2.lead_agent import GraphContext
 from deerflow.agentsv2.nodes.constants import THINK_MES
-from deerflow.agentsv2.thread_state import TodoItem
+from deerflow.agentsv2.nodes.state_bar import format_todo_state_bar
+from deerflow.agentsv2.thread_state import Task, TodoItem
 from deerflow.core.context import trace_id_ctx_var
 from deerflow.core.log import logger
 
+CURRENT_TIME_TAG = ["<current_time>", "</current_time>"]
+
 
 class PlanOutput(BaseModel):
-    need_plan: bool = Field(description="判断当前用户需求是否需要拆解为执行计划")
-    todo_list: list[TodoItem] = Field(default_factory=list, description="可并行的任务列表")
-    direct_answer: str = Field(default="", description="直接回答用户的问题")
+    """计划节点结构化输出。"""
+
+    need_plan: bool = Field(description="是否需要拆解为多阶段执行计划")
+    todo_phases: list[dict] = Field(
+        default_factory=list,
+        description="""按顺序的执行阶段列表。每个元素：
+{
+  "phase_desc": "阶段描述",
+  "tasks": [
+    {"tool_name": "weather/general", "tool_args": {...}, "task_desc": "描述"}
+  ]
+}""",
+    )
+    direct_answer: str = Field(default="", description="直接回答（need_plan=False）")
 
 
-async def route_after_plan(state: ThreadState) -> str:
-    """
-    声明式路由：根据 state 中的 todo_list 是否为空决定去向
-    """
-    if len(state.get("todo_list", [])) > 0:
-        return "dispatch_node"  # 有计划，去任务下发节点
-    else:
-        return END  # 没计划（直接回答/澄清/失败），直接结束
+PLAN_SYSTEM_PROMPT = """你是一个任务规划助手。分析用户需求，拆解为按顺序执行的多个阶段。
+
+可用工具：
+  - weather(city, date): 查询天气。city=城市名, date=日期(可选)
+  - general(query): 通用信息查询。query=问题描述
+
+输出 todo_phases 列表，每个 phase 包含：
+  - phase_desc: 阶段描述
+  - tasks: 本阶段要调用的工具列表（同阶段可并行）
+
+{state_bar}"""
+
+
+def _make_tool_call(tool_name: str, tool_args: dict) -> dict:
+    """构造 ToolNode 识别的 tool_call 格式。"""
+    return {
+        "name": tool_name,
+        "args": tool_args,
+        "id": str(uuid.uuid4()),
+        "type": "tool_call",
+    }
 
 
 async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: Runtime[GraphContext]) -> dict:
-    """
-    计划节点：只负责意图识别、任务拆解、校验、SSE推送，并返回状态更新。
-    """
     context = runtime.context
-    plan_llm = context.plan_llm
+    llm = context.plan_llm
     writer = get_stream_writer()
     writer({"type": THINK_MES, "messages": "助手开始规划任务", "trace_id": trace_id_ctx_var.get()})
 
-    available_agents = ["weather", "general"]
-    structured_llm = plan_llm.with_structured_output(PlanOutput)
-    system_prompt = context.langfuse_client.get_prompt(context.app_config.langfuse_prompt_config.plan_system_prompt).compile(
-        subagent_list="""
-       -  weather: 用于查询天气信息的智能体。 需要提供时间、地点列如 20260701 北京
-       -  general: 用于一般任务的智能体。例如 查询时间、计算等。
-    """
-    )
-    # 获取用户长期记忆
-    full_messages = [system_prompt] + state["messages"]
+    structured = llm.with_structured_output(PlanOutput)
 
-    max_retries = 3
-    attempt = 0
-    valid_todo_list = []
-    need_plan_flag = False
-    direct_answer_content = ""
+    # 构建消息
+    cp = state.get("current_phase", 0)
+    todo = state.get("todo_list", [])
+    bar = format_todo_state_bar(todo, cp)
 
-    while attempt < max_retries:
-        attempt += 1
+    system_text = PLAN_SYSTEM_PROMPT.format(state_bar=bar)
+    messages: list[BaseMessage] = [HumanMessage(content=system_text)]
+    messages.extend(state.get("messages", []))
+
+    # 时间戳
+    has_time = False
+    for msg in state.get("messages", []):
+        if isinstance(msg, HumanMessage) and str(msg.content).strip().startswith(CURRENT_TIME_TAG[0]):
+            try:
+                el = etree.fromstring(str(msg.content))
+                d = datetime.datetime.strptime(str(el.text), "%Y-%m-%d").date()
+                if d == datetime.date.today():
+                    has_time = True
+            except Exception:
+                pass
+    if not has_time:
+        messages.append(HumanMessage(content=f"{CURRENT_TIME_TAG[0]}{datetime.date.today().strftime('%Y-%m-%d')}{CURRENT_TIME_TAG[1]}"))
+
+    for attempt in range(1, 4):
         try:
-            output: PlanOutput = structured_llm.invoke(full_messages)
-
-            # 场景 A：不需要生成 TODO（直接回答 or 澄清问题）
+            output: PlanOutput = structured.invoke(messages)
             if not output.need_plan:
-                need_plan_flag = False
-                direct_answer_content = output.direct_answer
-                break
+                return {"todo_list": [], "current_phase": -1, "messages": [AIMessage(content=output.direct_answer)]}
 
-            # 场景 B：需要生成 TODO，校验 agent_name 合法性
-            need_plan_flag = True
-            invalid_agents = []
+            todo_list = []
+            for i, phase_data in enumerate(output.todo_phases):
+                tasks = []
+                for t in phase_data.get("tasks", []):
+                    tn = t.get("tool_name", "")
+                    if tn not in ("weather", "general"):
+                        raise ValueError(f"未知工具: {tn}")
+                    tasks.append(
+                        Task(
+                            tool_name=tn,
+                            tool_args=t.get("tool_args", {}),
+                            task_desc=t.get("task_desc", ""),
+                        )
+                    )
+                todo_list.append(
+                    TodoItem(
+                        phase_desc=phase_data.get("phase_desc", f"阶段{i + 1}"),
+                        todo=tasks,
+                    )
+                )
 
-            for todo_item in output.todo_list:
-                if len(todo_item.todo) > 3:
-                    todo_item.todo = todo_item.todo[:3]
+            if not todo_list:
+                raise ValueError("空的 todo_list")
 
-                for task in todo_item.todo:
-                    if task.agent_name not in available_agents:
-                        invalid_agents.append(task.agent_name)
+            # SSE 推送计划
+            for i, phase in enumerate(todo_list):
+                writer(
+                    {
+                        "type": THINK_MES,
+                        "step": i + 1,
+                        "total_steps": len(todo_list),
+                        "phase_desc": phase.phase_desc,
+                        "tasks": [{"tool": t.tool_name, "args": t.tool_args, "desc": t.task_desc} for t in phase.todo],
+                        "step_status": "pending",
+                        "trace_id": trace_id_ctx_var.get(),
+                    }
+                )
 
-            if not invalid_agents:
-                valid_todo_list = output.todo_list
-                break
-            else:
-                error_msg = f"第 {attempt} 次尝试失败。以下 agent 不存在: {invalid_agents}。可用的 agent 是: {available_agents}。请重新规划。"
-                full_messages.append(ToolMessage(content=error_msg))
+            # 构造第一阶段 tool_calls 的 AIMessage
+            phase0 = todo_list[0]
+            tool_calls = [_make_tool_call(t.tool_name, t.tool_args) for t in phase0.todo]
+            ai_msg = AIMessage(content=f"开始执行: {phase0.phase_desc}", tool_calls=tool_calls)
+
+            return {
+                "todo_list": todo_list,
+                "current_phase": 0,
+                "messages": [ai_msg],
+            }
 
         except Exception as e:
-            logger.error(f"第 {attempt} 次解析失败: {str(e)}", extra={"trace_id": trace_id_ctx_var.get()})
-            error_msg = f"第 {attempt} 次解析失败: {str(e)}。请重新生成。"
-            full_messages.append(ToolMessage(content=error_msg))
-
-    # --- 重试结束后的分支处理 ---
-
-    # 情况 1：重试 3 次仍然失败，降级处理
-    if attempt == max_retries and (not need_plan_flag or not valid_todo_list) and not direct_answer_content:
-        # 返回空 todo_list，条件边会据此路由到 END
-        logger.error("计划节点重试 3 次仍然失败，无法生成有效 TODO。", extra={"trace_id": trace_id_ctx_var.get()})
-        return {"todo_list": [], "messages": [AIMessage(content="抱歉，我在处理时遇到了困难，请提供更详细的指令。")]}
-
-    # 情况 2：不需要生成 TODO（直接回答 / 澄清问题）
-    if not need_plan_flag:
-        # 返回空 todo_list，条件边会据此路由到 END
-        return {"todo_list": [], "messages": [AIMessage(content=direct_answer_content)]}
-
-    # 情况 3：成功生成并校验通过 TODO
-    for index, todo_item in enumerate(valid_todo_list):
-        sse_event = {"type": THINK_MES, "step": index + 1, "total_steps": len(valid_todo_list), "tasks": todo_item.model_dump(), "step_status": "pending", "trace_id": trace_id_ctx_var.get()}
-        writer(sse_event)
-
-    summary_message = AIMessage(content=f"我已经为您生成了执行计划，共包含 {len(valid_todo_list)} 个阶段。即将开始执行...")
-
-    # 返回非空 todo_list，条件边会据此路由到 dispatch_node
-    return {"messages": [summary_message], "todo_list": valid_todo_list}
+            logger.error(f"Plan 第 {attempt} 次失败: {e}", extra={"trace_id": trace_id_ctx_var.get()})
+            if attempt == 3:
+                return {"todo_list": [], "current_phase": -1, "messages": [AIMessage(content="抱歉，计划生成失败")]}

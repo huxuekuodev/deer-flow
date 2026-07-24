@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -16,7 +17,7 @@ _INSERT_SQL = """
 INSERT INTO message_history
     (user_id, thread_id, run_id, role, content, model_name, metadata)
 VALUES
-    ($1,    $2,        $3,    $4,   $5,      $6,        $7)
+    (%s,    %s,        %s,    %s,   %s,      %s,        %s)
 """
 # fmt: on
 
@@ -48,7 +49,7 @@ async def record_message(
         async with pool.connection() as conn:
             await conn.execute(
                 _INSERT_SQL,
-                (user_id, thread_id, run_id, role, content, model_name, metadata),
+                (user_id, thread_id, run_id, role, content, model_name, json.dumps(metadata) if metadata else None),
             )
     except Exception:
         logger.exception(

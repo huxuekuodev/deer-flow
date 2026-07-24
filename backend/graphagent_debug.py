@@ -35,7 +35,7 @@ async def main():
     from deerflow.config import get_app_config
     from deerflow.config.app_config import apply_logging_level
     from deerflow.runtime.checkpointer.async_provider import make_checkpointer
-    from deerflow.runtime.msg_history import make_msg_history_pool
+    from deerflow.runtime.msg_history import make_msg_history_pool, record_message
     from deerflow.tracing import build_tracing_callbacks
 
     app_config = get_app_config()
@@ -58,10 +58,14 @@ async def main():
             existing = list(existing)
         config["callbacks"] = [*existing, *tracing_callbacks]
 
-    async with make_checkpointer(app_config=app_config) as checkpointer, make_msg_history_pool(app_config.msg_history_database) as msg_history_pool:
+    async with (
+        make_checkpointer(app_config=app_config) as checkpointer,
+        make_msg_history_pool(app_config.msg_history_database) as msg_history_pool,
+    ):
         runcontext = RunContext(checkpointer=checkpointer, msg_history_pool=msg_history_pool)
         agent = GraphAgent(config, runcontext)
         state = {"messages": [HumanMessage(content="北京，今天的天气")]}
+        await record_message(msg_history_pool, content="北京，今天的天气", role=1, user_id="huxuekuo", thread_id="debug-thread-003", run_id="trace_id", model_name="deepseek-reasoner", metadata={})
         ai_content = ""
         async for chunk in agent.astream(state):
             if chunk["type"] == "messages":
@@ -73,6 +77,7 @@ async def main():
             elif chunk["type"] == "values":
                 ai_content = chunk["data"]["messages"][-1].content
                 logger.info(ai_content)
+        await record_message(msg_history_pool, content=ai_content, role=2, user_id="huxuekuo", thread_id="debug-thread-003", run_id="trace_id", model_name="deepseek-reasoner", metadata={})
 
 
 if __name__ == "__main__":

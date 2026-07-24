@@ -22,6 +22,7 @@ dependencies = [
     "pyjwt>=2.13.0",
     "email-validator>=2.0.0",
     "loguru>=0.7.3",
+    "lxml>=6.1.0",
 ]
 
 [project.optional-dependencies]

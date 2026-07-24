@@ -35,7 +35,7 @@ def _resolve_model_name(requested_model_name: str | None = None, *, app_config: 
     return default_model_name
 
 
-def create_plan_llm(config: RunnableConfig, *, app_config: AppConfig | None = None):
+def create_llm(config: RunnableConfig, *, app_config: AppConfig | None = None):
     """
     创建计划LLM
     """
@@ -56,7 +56,8 @@ def create_plan_llm(config: RunnableConfig, *, app_config: AppConfig | None = No
     # Thinking mode (e.g. DeepSeek) rejects tool_choice with
     # "Thinking mode does not support this tool_choice".
     # Force thinking off so structured output works.
-    return create_chat_model(name=model_name, thinking_enabled=False, app_config=resolved_app_config, attach_tracing=False)
+    llm = create_chat_model(name=model_name, thinking_enabled=False, app_config=resolved_app_config, attach_tracing=False)
+    return llm
 
 
 # 创建执行agent
