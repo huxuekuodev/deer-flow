@@ -21,7 +21,7 @@ def _get_runtime_config(config: RunnableConfig) -> dict:
 
 
 def _resolve_model_name(requested_model_name: str | None = None, *, app_config: AppConfig | None = None) -> str:
-    """Resolve a runtime model name safely, falling back to default if invalid. Returns None if no models are configured."""
+    """Resolve a runtime model name safely, falling back to default if invalid."""
     app_config = app_config or get_app_config()
     default_model_name = app_config.models[0].name if app_config.models else None
     if default_model_name is None:
@@ -37,14 +37,13 @@ def _resolve_model_name(requested_model_name: str | None = None, *, app_config: 
 
 def create_llm(config: RunnableConfig, *, app_config: AppConfig | None = None):
     """
-    创建计划LLM
+    创建计划 + 执行 LLM。
+    关闭 thinking 以支持 structured output 和 tool binding。
     """
     cfg = _get_runtime_config(config)
     resolved_app_config = app_config or get_app_config()
 
     is_bootstrap = cfg.get("is_bootstrap", False)
-    # thinking_enabled = cfg.get("thinking_enabled", False)
-
     requested_model_name: str | None = cfg.get("model_name") or cfg.get("model")
     agent_name = validate_agent_name(cfg.get("agent_name"))
 
@@ -52,16 +51,34 @@ def create_llm(config: RunnableConfig, *, app_config: AppConfig | None = None):
     agent_model_name = agent_config.model if agent_config and agent_config.model else None
     model_name = _resolve_model_name(requested_model_name or agent_model_name, app_config=resolved_app_config)
 
-    # Plan LLM uses with_structured_output() which internally sets tool_choice.
-    # Thinking mode (e.g. DeepSeek) rejects tool_choice with
-    # "Thinking mode does not support this tool_choice".
-    # Force thinking off so structured output works.
-    llm = create_chat_model(name=model_name, thinking_enabled=False, app_config=resolved_app_config, attach_tracing=False)
+    llm = create_chat_model(
+        name=model_name,
+        thinking_enabled=False,  # Thinking mode does not support tool_choice / structured output
+        app_config=resolved_app_config,
+        attach_tracing=False,
+    )
     return llm
 
 
-# 创建执行agent
-def create_react_agent(config: RunnableConfig, *, app_config: AppConfig | None = None):
+def create_execution_llm(config: RunnableConfig, *, app_config: AppConfig | None = None):
     """
-    创建反应agent
+    创建步骤执行用的 LLM（支持 thinking）。
+    与 plan_llm 不同，执行 LLM 需要 thinking 能力来推理工具调用。
     """
+    cfg = _get_runtime_config(config)
+    resolved_app_config = app_config or get_app_config()
+
+    requested_model_name: str | None = cfg.get("model_name") or cfg.get("model")
+    agent_name = validate_agent_name(cfg.get("agent_name"))
+
+    agent_config = load_agent_config(agent_name) if not cfg.get("is_bootstrap", False) else None
+    agent_model_name = agent_config.model if agent_config and agent_config.model else None
+    model_name = _resolve_model_name(requested_model_name or agent_model_name, app_config=resolved_app_config)
+
+    llm = create_chat_model(
+        name=model_name,
+        thinking_enabled=True,  # 执行步骤需要 thinking
+        app_config=resolved_app_config,
+        attach_tracing=True,
+    )
+    return llm

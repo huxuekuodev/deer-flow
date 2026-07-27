@@ -73,7 +73,7 @@ async def main():
                 if message_chunk.content:
                     logger.info(message_chunk.content, end="|", flush=True)
             elif chunk["type"] == "custom":
-                logger.info(f"Status: {chunk['data']['type']}")
+                logger.info(f"Status: {chunk['data']['type']}, {chunk['data']['messages']}")
             elif chunk["type"] == "values":
                 ai_content = chunk["data"]["messages"][-1].content
                 logger.info(ai_content)

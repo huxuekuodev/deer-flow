@@ -1,26 +1,35 @@
 """
-三节点循环：PLAN → tools(ToolNode) → OBSERVE。
+三节点循环主图：PLAN → step_dispatch_node → review_node → (PLAN|END)。
 
-标准 LangGraph ToolNode 模式：
-  - PLAN/OBSERVE 产出 AIMessage.tool_calls
-  - ToolNode 自动读取并执行工具
-  - OBSERVE 读 ToolMessages，决策下一批 tool_calls 或结束
+循环流程:
+  START → plan_model_node
+    plan_completed → END（无 plan / 直接回答）
+    创建 plan → step_dispatch_node
+
+  step_dispatch_node
+    执行 DAG 所有步骤 → review_node（始终）
+
+  review_node
+    评审执行结果
+      足够回答 → 输出最终答案 → END
+      需要补充 → replan 回到 plan_model_node（调用 update_plan 追加步骤）
+      无法回答 → 如实告知用户 → END
 """
 
 from langchain_core.runnables import RunnableConfig
 from langfuse import Langfuse
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode
 
 from deerflow.agentsv2.lead_agent import GraphContext, create_llm
-from deerflow.agentsv2.lead_agent.tools import make_tools
 from deerflow.agentsv2.nodes import (
-    observe_node,
     plan_model_node,
-    route_after_observe,
+    review_node,
+    route_after_dispatch,
     route_after_plan,
-    route_after_tools,
+    route_after_review,
+    step_dispatch_node,
 )
+from deerflow.agentsv2.plan_storage import get_plan_storage
 from deerflow.agentsv2.thread_state import ThreadState
 from deerflow.config.app_config import get_app_config
 from deerflow.core.context import trace_id_ctx_var
@@ -28,44 +37,51 @@ from deerflow.runtime import RunContext
 
 
 class GraphAgent:
+    """
+    三节点循环 GraphAgent (v2):
+      START → plan_model_node → step_dispatch_node → review_node
+                ↑                                    |
+                └──────── replan ─────────────────────┘
+    """
+
     def __init__(self, config: RunnableConfig, runcontext: RunContext):
         self.config = config
         self._app_config = get_app_config()
 
-    def _build_graph(self):
-        """构建图。每次 astream 调用时构建（因为 tools 依赖 llm）。"""
-        ctx = self.get_context()
-        tools = make_tools(ctx.plan_llm)
-
+    def _build_graph(self) -> StateGraph:
         builder = StateGraph(ThreadState, context_schema=GraphContext)
 
         builder.add_node("plan_model_node", plan_model_node)
-        builder.add_node("tools", ToolNode(tools))
-        builder.add_node("observe_node", observe_node)
+        builder.add_node("step_dispatch_node", step_dispatch_node)
+        builder.add_node("review_node", review_node)
 
         builder.add_edge(START, "plan_model_node")
 
+        # PLAN → plan_id? → step_dispatch_node : END
         builder.add_conditional_edges(
             "plan_model_node",
             route_after_plan,
             {
-                "tools": "tools",
+                "step_dispatch_node": "step_dispatch_node",
                 END: END,
             },
         )
+
+        # step_dispatch_node → 始终进入 review_node
         builder.add_conditional_edges(
-            "tools",
-            route_after_tools,
+            "step_dispatch_node",
+            route_after_dispatch,
             {
-                "tools": "tools",
-                "observe_node": "observe_node",
+                "review_node": "review_node",
             },
         )
+
+        # review_node → 回到 plan_model_node (replan) : END
         builder.add_conditional_edges(
-            "observe_node",
-            route_after_observe,
+            "review_node",
+            route_after_review,
             {
-                "tools": "tools",
+                "plan_model_node": "plan_model_node",
                 END: END,
             },
         )
@@ -78,6 +94,12 @@ class GraphAgent:
             self.config["trace_id"] = tid
 
         gi = {"messages": messages} if not isinstance(messages, dict) else messages
+        if isinstance(gi, dict):
+            gi.setdefault("plan_id", "")
+            gi.setdefault("plan_context", "")
+            gi.setdefault("active_steps", [])
+            gi.setdefault("plan_completed", False)
+            gi.setdefault("user_message", "")
 
         agent = self._build_graph()
         ctx = self.get_context()
@@ -96,4 +118,5 @@ class GraphAgent:
             app_config=self._app_config,
             plan_llm=create_llm(self.config),
             langfuse_client=Langfuse(),
+            plan_storage=get_plan_storage(),
         )

@@ -1,33 +1,35 @@
-"""标准 LangGraph ToolNode 模式的状态定义。
+"""
+DAG 模式的状态定义（Co-Sight 风格）。
 
-PLAN 产出 todo_list + AIMessage.tool_calls（当前阶段）
-  → ToolNode 自动读取并执行工具
-  → OBSERVE 读 ToolMessages，更新 todo，产出下一阶段 tool_calls"""
+关键变化：
+  - 移除旧的顺序 phases (TodoItem / current_phase)
+  - 用 plan_id 引用 PlanDocument（内存或 Redis 中的 DAG 计划）
+  - active_steps: 记录当前正在执行的步骤（子图）
+"""
 
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
-from pydantic import BaseModel, Field
-
-
-class Task(BaseModel):
-    task_id: str = Field(default="")
-    tool_name: str = Field(default="")
-    tool_args: dict = Field(default_factory=dict)
-    task_desc: str = Field(default="")
-    done: bool = False
-    result: str = Field(default="")
-
-
-class TodoItem(BaseModel):
-    phase_desc: str = Field(default="")
-    todo: list[Task] = Field(default_factory=list)
-    done: bool = False
-    context: str = Field(default="")
 
 
 class ThreadState(TypedDict, total=False):
-    messages: Annotated[list[BaseMessage], add_messages]  # 含 ToolMessages
-    todo_list: list[TodoItem]
-    current_phase: int  # 0-based，-1 全部完成
+    # LangGraph 消息列表（含 ToolMessages）
+    messages: Annotated[list[BaseMessage], add_messages]
+
+    # === DAG Plan 相关字段 ===
+
+    # 当前计划的 ID（引用 PlanDocument）
+    plan_id: str
+
+    # 已完成且仍需传递的上下文摘要（Co-Sight 风格 step_notes 汇总）
+    plan_context: str
+
+    # 当前正在活跃执行的步骤索引列表（支持并行子图）
+    active_steps: list[int]
+
+    # 所有步骤是否已完成
+    plan_completed: bool
+
+    # 用户原始消息（用于 review_node 评审时判断结果是否满足需求）
+    user_message: str
