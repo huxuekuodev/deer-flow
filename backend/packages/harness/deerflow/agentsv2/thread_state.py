@@ -7,13 +7,14 @@ DAG 模式的状态定义（Co-Sight 风格）。
   - active_steps: 记录当前正在执行的步骤（子图）
 """
 
-from typing import Annotated, TypedDict
+from typing import Annotated
 
+from langchain.agents import AgentState
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
 
 
-class ThreadState(TypedDict, total=False):
+class ThreadState(AgentState):
     # LangGraph 消息列表（含 ToolMessages）
     messages: Annotated[list[BaseMessage], add_messages]
 

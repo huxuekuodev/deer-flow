@@ -1,6 +1,8 @@
 """
 三节点循环主图：PLAN → step_dispatch_node → review_node → (PLAN|END)。
 
+支持 LangGraph checkpointer，相同 thread_id 自动恢复历史消息。
+
 循环流程:
   START → plan_model_node
     plan_completed → END（无 plan / 直接回答）
@@ -42,13 +44,25 @@ class GraphAgent:
       START → plan_model_node → step_dispatch_node → review_node
                 ↑                                    |
                 └──────── replan ─────────────────────┘
+
+    checkpointer 支持:
+      - __init__ 时从 runcontext 获取 checkpointer / msg_history_pool
+      - _build_graph 编译时注入 checkpointer
+      - 相同 thread_id 的多次调用自动恢复历史消息
     """
 
     def __init__(self, config: RunnableConfig, runcontext: RunContext):
         self.config = config
         self._app_config = get_app_config()
+        self._checkpointer = runcontext.checkpointer if runcontext else None
+        self._msg_history_pool = getattr(runcontext, "msg_history_pool", None) if runcontext else None
+        self._agent = None  # 缓存编译好的图
 
     def _build_graph(self) -> StateGraph:
+        """构建并编译图。使用缓存，避免每次重建。"""
+        if self._agent is not None:
+            return self._agent
+
         builder = StateGraph(ThreadState, context_schema=GraphContext)
 
         builder.add_node("plan_model_node", plan_model_node)
@@ -86,27 +100,44 @@ class GraphAgent:
             },
         )
 
-        return builder.compile()
+        # 编译时注入 checkpointer
+        if self._checkpointer is not None:
+            self._agent = builder.compile(checkpointer=self._checkpointer)
+        else:
+            self._agent = builder.compile()
+
+        return self._agent
 
     async def astream(self, messages, trace_id=None):
         tid = trace_id or trace_id_ctx_var.get()
         if tid:
             self.config["trace_id"] = tid
 
-        gi = {"messages": messages} if not isinstance(messages, dict) else messages
-        if isinstance(gi, dict):
-            gi.setdefault("plan_id", "")
-            gi.setdefault("plan_context", "")
-            gi.setdefault("active_steps", [])
-            gi.setdefault("plan_completed", False)
-            gi.setdefault("user_message", "")
-
         agent = self._build_graph()
         ctx = self.get_context()
 
+        # 关键：使用 checkpointer 时只传新消息，历史从 checkpoint 恢复
+        input_data: dict = {}
+        if isinstance(messages, dict):
+            input_data = messages
+        elif isinstance(messages, list):
+            input_data = {"messages": messages}
+        else:
+            input_data = {"messages": [messages]}
+
+        # 只有首次调用（没有已有 plan_id 时）才填充默认值
+        for key, default in [
+            ("plan_id", ""),
+            ("plan_context", ""),
+            ("active_steps", []),
+            ("plan_completed", False),
+            ("user_message", ""),
+        ]:
+            input_data.setdefault(key, default)
+
         async for st in agent.astream(
             stream_mode=["values", "messages", "custom"],
-            input=gi,
+            input=input_data,
             config=self.config,
             context=ctx,
             version="v2",

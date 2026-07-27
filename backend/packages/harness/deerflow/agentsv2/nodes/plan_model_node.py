@@ -117,15 +117,20 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
     existing_plan_id = state.get("plan_id", "")
     existing_context = state.get("plan_context", "")
 
-    # 构建 messages
+    # 构建 messages（基础消息，重试时只复制此列表，不包含 ToolMessage）
     system_text = build_plan_system_prompt(
         existing_plan_id=existing_plan_id,
         existing_context=existing_context,
     )
 
-    messages: list[BaseMessage] = [HumanMessage(content=system_text)]
+    base_messages: list[BaseMessage] = [HumanMessage(content=system_text)]
     user_msgs = state.get("messages", [])
-    messages.extend(user_msgs)
+    # 过滤掉 ToolMessage — 它们需要前面有对应的 AIMessage.tool_calls
+    # checkpointer 恢复的消息中可能包含孤立的 ToolMessage
+    for m in user_msgs:
+        if hasattr(m, "type") and m.type == "tool":
+            continue
+        base_messages.append(m)
 
     # 绑定 plan 工具：规划工具 + ask_clarification
     from deerflow.tools.v2 import get_plan_tools
@@ -135,7 +140,10 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
 
     for attempt in range(1, 4):
         try:
-            result = await bound_llm.ainvoke(messages)
+            # 重试时只保留原始消息（不包含之前失败的 ToolMessage）
+            attempt_messages = list(base_messages)
+
+            result = await bound_llm.ainvoke(attempt_messages)
 
             if not hasattr(result, "tool_calls") or not result.tool_calls:
                 # 不需要规划，直接回答
@@ -207,7 +215,7 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
             }
 
         except Exception as e:
-            logger.error(f"Plan 第 {attempt} 次失败: {e}", extra={"trace_id": trace_id})
+            logger.error("Plan 第 {} 次失败: {}", attempt, e, extra={"trace_id": trace_id})
             if attempt == 3:
                 fallback = AIMessage(content="计划生成失败，请重新描述需求。")
                 return {"plan_completed": True, "messages": [fallback]}

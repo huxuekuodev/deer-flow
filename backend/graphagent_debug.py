@@ -44,7 +44,7 @@ async def main():
 
     config = {
         "configurable": {
-            "thread_id": "debug-thread-003",
+            "thread_id": "debug-thread-010",
             "thinking_enabled": True,
             "is_plan_mode": True,
             "model_name": "deepseek-reasoner",
@@ -68,11 +68,7 @@ async def main():
         await record_message(msg_history_pool, content="北京，今天的天气", role=1, user_id="huxuekuo", thread_id="debug-thread-003", run_id="trace_id", model_name="deepseek-reasoner", metadata={})
         ai_content = ""
         async for chunk in agent.astream(state):
-            if chunk["type"] == "messages":
-                message_chunk, metadata = chunk["data"]
-                if message_chunk.content:
-                    logger.info(message_chunk.content, end="|", flush=True)
-            elif chunk["type"] == "custom":
+            if chunk["type"] == "custom":
                 logger.info(f"Status: {chunk['data']['type']}, {chunk['data']['messages']}")
             elif chunk["type"] == "values":
                 ai_content = chunk["data"]["messages"][-1].content
