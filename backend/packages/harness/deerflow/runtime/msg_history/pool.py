@@ -36,7 +36,7 @@ def _build_postgres_pool(conn_string: str):
 
 
 @contextlib.asynccontextmanager
-async def make_msg_history_pool(config: MsgHistoryDatabaseConfig) -> AsyncIterator:
+async def make_msg_history_pool(config: MsgHistoryDatabaseConfig | None) -> AsyncIterator:
     """Async context manager 创建并管理 msg_history 数据库连接池。
 
     用法::

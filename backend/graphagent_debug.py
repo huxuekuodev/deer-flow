@@ -19,6 +19,7 @@ import asyncio
 import uuid
 
 from dotenv import load_dotenv
+from langchain_core.runnables import RunnableConfig
 
 from deerflow.agentsv2.lead_agent.agent import GraphAgent
 from deerflow.core.context import trace_id_ctx_var
@@ -42,7 +43,7 @@ async def main():
     apply_logging_level(app_config.log_level)
     from langchain_core.messages import HumanMessage
 
-    config = {
+    config: RunnableConfig = {
         "configurable": {
             "thread_id": "debug-thread-016",
             "thinking_enabled": True,
@@ -53,10 +54,7 @@ async def main():
     }
     tracing_callbacks = build_tracing_callbacks(trace_id=trace_id)
     if tracing_callbacks:
-        existing = config.get("callbacks") or []
-        if not isinstance(existing, list):
-            existing = list(existing)
-        config["callbacks"] = [*existing, *tracing_callbacks]
+        config["callbacks"] = [*tracing_callbacks]
 
     async with (
         make_checkpointer(app_config=app_config) as checkpointer,
