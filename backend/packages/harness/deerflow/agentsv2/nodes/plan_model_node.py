@@ -8,8 +8,9 @@ PLAN 节点（Co-Sight 模式）。
 """
 
 import re
+from datetime import datetime
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph.runtime import Runtime
@@ -22,11 +23,11 @@ from deerflow.core.context import trace_id_ctx_var
 from deerflow.core.log import logger
 from deerflow.tools.v2 import describe_execute_tools
 
-PLAN_SYSTEM_PROMPT_HEADER = """你是一个任务规划助手。分析用户需求，拆解为多步骤 DAG 计划。
-
-## 规划工具
+PLAN_SYSTEM_PROMPT_HEADER = """<Role>
+你是一个任务规划助手。分析用户需求，拆解为多步骤 DAG 计划。
+</Role>
+<planTools>
 你只能使用以下工具来规划任务：
-
 1. **create_plan(title, steps, dependencies?)** — 创建 DAG 计划
    - title: 计划标题
    - steps: 步骤描述列表（数组）
@@ -35,48 +36,131 @@ PLAN_SYSTEM_PROMPT_HEADER = """你是一个任务规划助手。分析用户需�
 
 2. **update_plan(plan_id, title?, steps?, dependencies?)** — 修改计划（保留已完成步骤）
 3. **get_plan_status(plan_id)** — 查询计划进度
-
+<planTools>
+<thinking_style>
 ## 规划原则
 - 每个步骤应是一个具体可执行的任务描述
 - 步骤间可指定依赖关系（DAG），无依赖的步骤可自动并行
 - 步骤数量控制在 3-8 个之间
 - 使用 create_plan 创建计划
+ ## 步骤设计指南
+ - 依赖执行能力的步骤，要描述清楚**要做什么**而不是直接写工具名
+ - 例如：「调用天气查询接口获取北京今日天气数据」而不是「weather(北京)」
+ - 步骤描述应让执行 LLM 理解目标并自主选择工具
 
+ ## 能力边界
+ - 如果上方的「可用的执行能力」中没有任何工具能满足用户的需求，则**不要创建计划**
+ - 此时应明确告知用户当前系统不支持该需求，并说明你有哪些能力范围"
+</thinking_style>
 
-{execution_tool_descriptions}"""
+<clarification_system>
+**工作流优先级：澄清 → 规划 → 行动**
+1. **第一步**：在思考中分析请求——识别不清晰、缺失或模糊之处
+2. **第二步**：如果需要澄清，立即调用 `ask_clarification` 工具——不要开始工作
+3. **第三步**：所有澄清问题解决后，才进行规划
 
+**关键规则：澄清永远先于行动。绝不要在执行过程中才开始澄清。**
 
-def build_plan_system_prompt(existing_plan_id: str = "", existing_context: str = "") -> str:
-    """动态构建 Plan system prompt，注入执行工具能力描述。"""
+**必须澄清的场景——在开始工作前必须调用 ask_clarification：**
 
-    tool_desc = describe_execute_tools()
-    actual_desc = tool_desc or ""
+1. **信息缺失**（`missing_info`）：未提供必要的细节
+   - 例如：用户说"创建一个网页爬虫"但未指定目标网站
+   - 例如："部署应用"但未指定环境
+   - **必要操作**：调用 ask_clarification 获取缺失信息
 
-    text = PLAN_SYSTEM_PROMPT_HEADER.format(execution_tool_descriptions=actual_desc)
+2. **需求模糊**（`ambiguous_requirement`）：存在多种合理解释
+   - 例如："优化代码"可能指性能、可读性或内存使用
+   - 例如："让它更好"不清楚要改进哪个方面
+   - **必要操作**：调用 ask_clarification 澄清确切需求
 
-    if existing_plan_id:
-        text += f"\n\n已有 plan_id={existing_plan_id}。如需修改，请用 get_plan_status 查看进度后用 update_plan 更新。"
-    if existing_context:
-        text += f"\n\n之前已完成的上下文:\n{existing_context}"
+3. **方案选择**（`approach_choice`）：存在多种可行方案
+   - 例如："添加认证"可以用JWT、OAuth、会话或API密钥
+   - 例如："存储数据"可以用数据库、文件、缓存等
+   - **必要操作**：调用 ask_clarification 让用户选择方案
 
-    text += """
+4. **风险操作**（`risk_confirmation`）：破坏性操作需要确认
+   - 例如：删除文件、修改生产配置、数据库操作
+   - 例如：覆盖已有代码或数据
+   - **必要操作**：调用 ask_clarification 获取明确确认
 
-## 步骤设计指南
-- 依赖执行能力的步骤，要描述清楚**要做什么**而不是直接写工具名
-- 例如：「调用天气查询接口获取北京今日天气数据」而不是「weather(北京)」
-- 步骤描述应让执行 LLM 理解目标并自主选择工具
+5. **建议**（`suggestion`）：你有推荐但希望获得批准
+   - 例如："我建议重构这段代码。是否继续？"
+   - **必要操作**：调用 ask_clarification 获取批准
 
-## 能力边界
-- 如果上方的「可用的执行能力」中没有任何工具能满足用户的需求，则**不要创建计划**
-- 此时应明确告知用户当前系统不支持该需求，并说明你有哪些能力范围"""
+**严格执行：**
+- ❌ 不要先开始工作再在执行中提出澄清——先澄清
+- ❌ 不要为了"效率"而跳过澄清——准确性比速度更重要
+- ❌ 不要在信息缺失时做假设——总是要提问
+- ❌ 不要靠猜测推进——停下来先调用 ask_clarification
+- ✅ 在思考中分析 → 识别不清晰之处 → 在行动前提出
+- ✅ 如果在思考中识别到需要澄清，必须立即调用该工具
+- ✅ 调用 ask_clarification 后，执行将自动中断
+- ✅ 等待用户回复——不要带着假设继续
 
-    return text
+**使用方法：**
+```python
+ask_clarification(
+    question="你的具体问题？",
+    clarification_type="missing_info",  # 或其他类型
+    context="为什么需要这个信息",  # 可选但推荐
+    options=["选项1", "选项2"]  # 可选，用于选择场景
+)
+```
+
+**示例：**
+用户："部署应用"
+你（思考）：缺少环境信息——必须提出澄清
+你（行动）：ask_clarification(
+    question="应该部署到哪个环境？",
+    clarification_type="approach_choice",
+    context="我需要知道目标环境以进行正确配置",
+    options=["开发环境", "预发布环境", "生产环境"]
+)
+[执行停止——等待用户回复]
+
+用户："预发布环境"
+你："正在部署到预发布环境..." [继续执行]
+</clarification_system>
+
+<execution_tool_descriptions>
+## 以下工具只作为规划参考工具，规划助手不能调用任何工具
+{execution_tool_descriptions}
+</execution_tool_descriptions>
+
+"""
 
 
 def _extract_plan_id(result_text: str) -> str:
     """从工具结果中提取 plan_id。"""
     m = re.search(r"Plan\s*ID:\s*([a-f0-9]{32})", result_text, re.IGNORECASE)
     return m.group(1) if m else ""
+
+
+async def _full_messages(state: ThreadState) -> list[BaseMessage]:
+    """返回包含 ToolMessage 的完整消息列表。"""
+    # 1.系统提示词
+    existing_plan_id = state.get("plan_id", "")
+    existing_context = state.get("plan_context", "")
+
+    tool_desc = describe_execute_tools()
+    actual_desc = tool_desc or ""
+    system_text = PLAN_SYSTEM_PROMPT_HEADER.format(execution_tool_descriptions=actual_desc)
+    base_messages: list[BaseMessage] = [SystemMessage(content=system_text)]
+    # 2. 规划记录
+    text = "<plan_record>"
+    if existing_plan_id:
+        text += f"\n\n已有 plan_id={existing_plan_id}。如需修改，请用 get_plan_status 查看进度后用 update_plan 更新。"
+    if existing_context:
+        text += f"\n\n之前已完成的上下文:\n{existing_context}"
+    text += "</plan_record>"
+    base_messages.append(HumanMessage(content=text))
+    # 3. 时间追踪
+    base_messages.append(HumanMessage(content=f"<current_time>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</current_time>"))
+    # 4. 历史轨迹 + 用户输入
+    user_msgs = state.get("messages", [])
+    base_messages.extend(user_msgs)
+
+    return base_messages
 
 
 async def _execute_plan_tool(tool_call: dict, writer) -> str:
@@ -113,25 +197,7 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
     trace_id = trace_id_ctx_var.get()
 
     writer({"type": THINK_MES, "messages": "🤔 分析需求，创建执行计划...", "trace_id": trace_id})
-
-    existing_plan_id = state.get("plan_id", "")
-    existing_context = state.get("plan_context", "")
-
-    # 构建 messages（基础消息，重试时只复制此列表，不包含 ToolMessage）
-    system_text = build_plan_system_prompt(
-        existing_plan_id=existing_plan_id,
-        existing_context=existing_context,
-    )
-
-    base_messages: list[BaseMessage] = [HumanMessage(content=system_text)]
-    user_msgs = state.get("messages", [])
-    # 过滤掉 ToolMessage — 它们需要前面有对应的 AIMessage.tool_calls
-    # checkpointer 恢复的消息中可能包含孤立的 ToolMessage
-    for m in user_msgs:
-        if hasattr(m, "type") and m.type == "tool":
-            continue
-        base_messages.append(m)
-
+    base_messages = await _full_messages(state)
     # 绑定 plan 工具：规划工具 + ask_clarification
     from deerflow.tools.v2 import get_plan_tools
 
@@ -150,28 +216,21 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
                 writer({"type": THINK_MES, "messages": "无需拆解，直接回答", "trace_id": trace_id})
                 return {"plan_id": "", "plan_completed": True, "messages": [result]}
 
-            # 检查是否调用了 ask_clarification
-            # 如果有，不执行工具，直接把 AIMessage 原样返回给下游处理
-            if any(tc.get("name") == "ask_clarification" for tc in result.tool_calls):
-                writer(
-                    {
-                        "type": THINK_MES,
-                        "messages": "需要用户澄清",
-                        "tool_calls": [tc.get("name") for tc in result.tool_calls],
-                        "trace_id": trace_id,
-                    }
-                )
-                return {"plan_id": "", "plan_completed": True, "messages": [result]}
-
             # 执行 LLM 调用的 plan 工具
             # 注意：LLM 可能一次返回多个 create_plan（重复调用），只执行第一个
             tool_messages: list[ToolMessage] = []
             plan_id_found = ""
             has_created = False
+            has_clarification = False
 
             for tc in result.tool_calls:
                 tc_id = tc.get("id", "")
                 tc_name = tc.get("name", "")
+
+                # 检查是否有 ask_clarification
+                if tc_name == "ask_clarification":
+                    has_clarification = True
+                    continue
 
                 # 跳过重复的 create_plan
                 if tc_name == "create_plan":
@@ -188,6 +247,22 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
                         plan_id_found = pid
 
                 tool_messages.append(ToolMessage(content=tool_result_text, tool_call_id=tc_id, name=tc_name))
+
+            # 如果 LLM 调用了 ask_clarification，不产生 ToolMessage，
+            # 清除 AIMessage 的 tool_calls，仅保留提问文本返回。
+            # 这样 checkpoint 恢复时 OpenAI 不会看到孤立的 tool_calls。
+            if has_clarification:
+                writer(
+                    {
+                        "type": THINK_MES,
+                        "messages": "需要用户澄清",
+                        "trace_id": trace_id,
+                    }
+                )
+                # 清除 tool_calls，问题已提出，不应持久化 pending 调用
+                result.tool_calls = []
+                result.additional_kwargs.pop("tool_calls", None)
+                return {"plan_id": "", "plan_completed": True, "messages": [result]}
 
             writer(
                 {
