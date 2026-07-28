@@ -1,36 +1,34 @@
 """
-DAG 模式的状态定义（Co-Sight 风格）。
+V2 状态定义，支持澄清 + 策划 + 执行 + 审查循环。
 
-关键变化：
-  - 移除旧的顺序 phases (TodoItem / current_phase)
-  - 用 plan_id 引用 PlanDocument（内存或 Redis 中的 DAG 计划）
-  - active_steps: 记录当前正在执行的步骤（子图）
+状态字段：
+  - messages: 消息列表
+  - plan_tasks: List[SubTask] — 计划中的子任务列表（持久化在 ThreadState 中）
+  - completed: bool — 是否全部完成
+  - user_message: str — 原始用户问题
+  - final_answer: str — 最终的 AIMessage.content
 """
 
-from typing import Annotated
+from typing import Annotated, TypedDict
 
-from langchain.agents import AgentState
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
 
+from deerflow.agentsv2.subtask import SubTask
 
-class ThreadState(AgentState):
-    # LangGraph 消息列表（含 ToolMessages）
+
+class ThreadState(TypedDict, total=False):
+    # LangGraph 消息列表
     messages: Annotated[list[BaseMessage], add_messages]
 
-    # === DAG Plan 相关字段 ===
+    # 子任务列表（Plan agent 输出）
+    plan_tasks: list[SubTask]
 
-    # 当前计划的 ID（引用 PlanDocument）
-    plan_id: str
+    # 完成标记
+    completed: bool
 
-    # 已完成且仍需传递的上下文摘要（Co-Sight 风格 step_notes 汇总）
-    plan_context: str
-
-    # 当前正在活跃执行的步骤索引列表（支持并行子图）
-    active_steps: list[int]
-
-    # 所有步骤是否已完成
-    plan_completed: bool
-
-    # 用户原始消息（用于 review_node 评审时判断结果是否满足需求）
+    # 用户原始消息
     user_message: str
+
+    # 最终答案
+    final_answer: str
