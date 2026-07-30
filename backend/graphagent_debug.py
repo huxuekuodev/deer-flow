@@ -45,7 +45,7 @@ async def main():
 
     config: RunnableConfig = {
         "configurable": {
-            "thread_id": "debug-thread-016",
+            "thread_id": "debug-thread-025",
             "thinking_enabled": True,
             "is_plan_mode": True,
             "model_name": "deepseek-reasoner",
@@ -62,7 +62,7 @@ async def main():
     ):
         runcontext = RunContext(checkpointer=checkpointer, msg_history_pool=msg_history_pool)
         agent = GraphAgent(config, runcontext)
-        userquery = "今天的天气"
+        userquery = "河北最凉爽的城市是那个？"
         state = {"messages": [HumanMessage(content=userquery)]}
         await record_message(msg_history_pool, content=userquery, role=1, user_id="huxuekuo", thread_id="debug-thread-012", run_id="trace_id", model_name="deepseek-reasoner", metadata={})
         ai_content = ""
@@ -72,7 +72,7 @@ async def main():
             elif chunk["type"] == "values":
                 ai_content = chunk["data"]["messages"][-1].content
                 logger.info(ai_content)
-        await record_message(msg_history_pool, content=ai_content, role=2, user_id="huxuekuo", thread_id="debug-thread-003", run_id="trace_id", model_name="deepseek-reasoner", metadata={})
+        await record_message(msg_history_pool, content=ai_content, role=2, user_id="huxuekuo", thread_id="debug-thread-020", run_id="trace_id", model_name="deepseek-reasoner", metadata={})
 
 
 if __name__ == "__main__":

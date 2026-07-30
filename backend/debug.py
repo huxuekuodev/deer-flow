@@ -96,7 +96,7 @@ async def main():
     print(f"自定义trace_id:{trace_id}")
     config = {
         "configurable": {
-            "thread_id": "debug-thread-001",
+            "thread_id": "debug-thread-002",
             "thinking_enabled": True,
             "is_plan_mode": True,
             # Uncomment to use a specific model
