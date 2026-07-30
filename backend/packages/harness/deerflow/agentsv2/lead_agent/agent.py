@@ -1,5 +1,9 @@
 """
-主图 v2：plan_model_node（澄清 + 规划 + 审查）→ step_dispatch_node → END。
+主图 v2：plan_model_node → step_dispatch_node (fan-out via Send) → general_agent → 循环 → END。
+
+step_fan_out_router 是路由函数（不是节点），由 add_conditional_edges 调用。
+当返回 [Send(...)] 时 LangGraph 自动并行派发到 general_agent；
+当返回 END 时流程结束。
 """
 
 from langchain_core.runnables import RunnableConfig
@@ -7,8 +11,11 @@ from langfuse import Langfuse
 from langgraph.graph import END, START, StateGraph
 
 from deerflow.agentsv2.lead_agent import GraphContext, create_llm
+from deerflow.agentsv2.lead_agent.subagent.general_agent import general_agent
 from deerflow.agentsv2.nodes import (
     plan_model_node,
+    step_dispatch_node,
+    step_fan_out_router,
 )
 from deerflow.agentsv2.plan_storage import get_plan_storage
 from deerflow.agentsv2.thread_state import ThreadState
@@ -31,9 +38,30 @@ class GraphAgent:
         builder = StateGraph(ThreadState, context_schema=GraphContext)
 
         builder.add_node("plan_model_node", plan_model_node)
+        builder.add_node("step_dispatch_node", step_dispatch_node)
+        builder.add_node("general_agent", general_agent)
 
+        # START → 规划
         builder.add_edge(START, "plan_model_node")
-        builder.add_edge("plan_model_node", END)
+
+        # 规划 → 有任务走调度，否则结束
+        builder.add_conditional_edges(
+            "plan_model_node",
+            lambda s: "step_dispatch_node" if s.get("plan_tasks") else END,
+        )
+
+        # 调度 → fan-out 路由：返回 [Send(...)] 或 END
+        # step_fan_out_router 是纯路由函数（非节点），由 framework 调用
+        builder.add_conditional_edges(
+            "step_dispatch_node",
+            step_fan_out_router,
+        )
+
+        # general_agent 完成 → 回到调度继续下一轮
+        builder.add_conditional_edges(
+            "general_agent",
+            step_fan_out_router,
+        )
 
         if self._checkpointer is not None:
             self._agent = builder.compile(checkpointer=self._checkpointer)

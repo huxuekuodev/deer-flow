@@ -45,7 +45,7 @@ async def main():
 
     config: RunnableConfig = {
         "configurable": {
-            "thread_id": "debug-thread-025",
+            "thread_id": "debug-thread-027",
             "thinking_enabled": True,
             "is_plan_mode": True,
             "model_name": "deepseek-reasoner",

@@ -144,3 +144,30 @@ def describe_execute_tools(*, app_config: AppConfig | None = None) -> str:
     lines.append("")
     lines.append("设计步骤时参考上面的工具能力。如果没有任何工具能满足用户需求，直接告知用户当前不支持，不要创建计划。")
     return "\n".join(lines)
+
+
+def describe_execute_tools_v2(*, app_config: AppConfig | None = None) -> str:
+    """生成执行能力描述，供 Plan agent 参考。
+
+    ⚠️ 这里列出工具名和用途，但 Plan agent 不可以调用它们。
+    Plan agent 唯一可调用的是 create_plan / update_plan / get_plan_status / ask_clarification。
+    """
+    tools = get_execute_tools(app_config=app_config)
+    if not tools:
+        return ""
+
+    lines = [
+        "## 执行阶段可用的工具",
+        "",
+        "以下工具将在步骤执行阶段可用",
+        "",
+    ]
+
+    for t in tools:
+        name = t.name
+        desc = t.description if hasattr(t, "description") else ""
+        summary = desc.split("\n")[0].strip() if desc else name
+        lines.append(f"- `{name}` — {summary}")
+
+    lines.append("")
+    return "\n".join(lines)
