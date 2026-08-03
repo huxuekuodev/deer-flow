@@ -136,8 +136,13 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
             agent_output = await agent.ainvoke({"messages": messages}, config=config)
             agent_msgs: list[Any] = agent_output.get("messages", []) if isinstance(agent_output, dict) else []
 
-            # 判定 agent 的实际输出类型（不管进哪个分支，都先评估）
-            has_clarification = any(isinstance(m, AIMessage) and getattr(m, "tool_calls", None) and any(tc.get("name") == "ask_clarification" for tc in m.tool_calls) for m in agent_msgs)
+            # 判定 agent 的实际输出类型（不管进哪个分支，都先评估）。
+            # 注意：agent_output["messages"] 包含历史 + 本轮新增，若遍历全部，
+            # 历史中曾出现过的 ask_clarification 调用会让 has_clarification 永远为 True
+            # （用户已澄清后仍误判为"等待澄清"）。因此只检查「本轮新增」的消息。
+            input_msg_ids = {getattr(m, "id", None) for m in messages if getattr(m, "id", None)}
+            new_msgs = [m for m in agent_msgs if getattr(m, "id", None) not in input_msg_ids]
+            has_clarification = any(isinstance(m, AIMessage) and getattr(m, "tool_calls", None) and any(tc.get("name") == "ask_clarification" for tc in m.tool_calls) for m in new_msgs)
             plan_output = _extract_plan_output(agent_output)
 
             # 填充评估输入，统一触发评估（覆盖澄清 / 规划 / 直接回复 全部分支）
@@ -191,20 +196,31 @@ def _extract_plan_output(agent_output: dict) -> PlanOutput | None:
     """从 agent 输出中提取结构化计划。
 
     兼容两种形态：
-      1. 模型直接输出 PlanOutput 对象（structured output）
-      2. 最终 AIMessage 里带结构化内容（部分模型）
+      1. 模型原生支持 structured output → PlanOutput 在最终 AIMessage 的 content/additional_kwargs 里
+      2. 模型不支持（如 deepseek-v4-flash）→ LangChain fallback 到 tool-call 实现，
+         真正解析结果存于 state 的 "structured_response" 字段，message 里只有
+         "Returning structured response: ..." 的 ToolMessage
     """
     if not isinstance(agent_output, dict):
         return None
 
+    # 1. 首选：fallback 模式（tool-call 实现）下的结构化响应
+    structured = agent_output.get("structured_response")
+    if structured is not None:
+        if isinstance(structured, PlanOutput):
+            return structured
+        if isinstance(structured, dict):
+            try:
+                return PlanOutput.model_validate(structured)
+            except Exception:
+                pass
+
+    # 2. 原生 JSON schema 模式：从 AIMessage content 解析
     messages = agent_output.get("messages", [])
     if not messages:
         return None
-
-    # 查找带结构化输出的消息
     for msg in reversed(messages):
         if isinstance(msg, AIMessage):
-            # 结构化输出通常放在 additional_kwargs 或 content 的 JSON 里
             plan = _try_parse_plan(msg)
             if plan:
                 return plan
