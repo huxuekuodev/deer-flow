@@ -60,6 +60,22 @@ def create_llm(config: RunnableConfig, *, app_config: AppConfig | None = None):
     return llm
 
 
+def create_llm_with_name(config: RunnableConfig, *, app_config: AppConfig | None = None, model_name: str = None):
+    """
+    创建计划 + 执行 LLM。
+    关闭 thinking 以支持 structured output 和 tool binding。
+    """
+    resolved_app_config = app_config or get_app_config()
+
+    llm = create_chat_model(
+        name=model_name,
+        thinking_enabled=False,  # Thinking mode does not support tool_choice / structured output
+        app_config=resolved_app_config,
+        attach_tracing=False,
+    )
+    return llm
+
+
 def create_execution_llm(config: RunnableConfig, *, app_config: AppConfig | None = None):
     """
     创建步骤执行用的 LLM（支持 thinking）。

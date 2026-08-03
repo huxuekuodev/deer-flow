@@ -19,13 +19,18 @@ from typing import Any
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
-from langfuse import Langfuse, get_client
+from langfuse import Langfuse
 from langgraph.config import get_stream_writer
 from langgraph.runtime import Runtime
 from langgraph.types import Overwrite
 from pydantic import BaseModel, Field
 
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
+from deerflow.agentsv2.evaluation.plan_evaluator import (
+    EvaluationInput,
+    PlanEvaluationConfig,
+    PlanEvaluator,
+)
 from deerflow.agentsv2.lead_agent import GraphContext
 from deerflow.agentsv2.nodes.constants import THINK_MES
 from deerflow.agentsv2.subtask import SubTask
@@ -107,6 +112,13 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
     # TODO 验证state中是否有current_time, 如果有判断是否是今日，如果不是注入新的日期，如果是不重复注入当日日期
     messages.append(HumanMessage(content=f"<current_time>{context.current_time}</current_time>"))
 
+    # 捕获评估输入轨迹（规划 agent 实际看到的全部上下文，用于公平评估）
+    eval_input = _capture_eval_input(
+        messages=messages,
+        plan_context=plan_context,
+        current_time=context.current_time,
+    )
+
     # 绑定工具：仅 ask_clarification（get_plan_tools 已包含）
     plan_tools = get_plan_tools()
     bound_llm = llm.bind_tools(plan_tools)
@@ -123,18 +135,30 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
         try:
             agent_output = await agent.ainvoke({"messages": messages}, config=config)
             agent_msgs: list[Any] = agent_output.get("messages", []) if isinstance(agent_output, dict) else []
-            langfuse = get_client()
-            with langfuse.start_as_current_observation(as_type="span", name="call-research-sub-agent", trace_context={"trace_id": trace_id}) as span:
-                span.update(input=messages[-1].content, output=agent_msgs[-1].content)
-            # 检查是否有澄清（agent 调用了 ask_clarification → 会 interrupt）
-            # ainvoke 返回的最终 state 里若出现 ToolMessage 且无 plan 输出，说明是澄清
+
+            # 判定 agent 的实际输出类型（不管进哪个分支，都先评估）
             has_clarification = any(isinstance(m, AIMessage) and getattr(m, "tool_calls", None) and any(tc.get("name") == "ask_clarification" for tc in m.tool_calls) for m in agent_msgs)
+            plan_output = _extract_plan_output(agent_output)
+
+            # 填充评估输入，统一触发评估（覆盖澄清 / 规划 / 直接回复 全部分支）
+            eval_input.clarification_requested = has_clarification
+            if plan_output:
+                eval_input.plan_action = plan_output.action
+                eval_input.tasks = [t.model_dump() for t in plan_output.tasks]
+            await _maybe_evaluate(
+                trace_id=trace_id,
+                eval_input=eval_input,
+                messages=messages,
+                config=config,
+                runtime=runtime,
+            )
+
+            # 澄清：需求含糊时 agent 调用了 ask_clarification → 中断等待用户
             if has_clarification:
                 writer({"type": THINK_MES, "messages": "📋 需要澄清需求", "trace_id": trace_id})
                 return {"messages": agent_msgs, "completed": True}
 
-            # 尝试从最终回复解析结构化输出
-            plan_output = _extract_plan_output(agent_output)
+            # 规划：模型输出了有效计划
             if plan_output and plan_output.tasks:
                 subtasks = [_to_subtask(t) for t in plan_output.tasks]
                 writer(
@@ -210,3 +234,106 @@ def _try_parse_plan(msg: AIMessage) -> PlanOutput | None:
         pass
 
     return None
+
+
+# ----------------------------------------------------------------------
+# 规划评估（实验性）
+# ----------------------------------------------------------------------
+
+
+def _capture_eval_input(
+    *,
+    messages: list[BaseMessage],
+    plan_context: str,
+    current_time: str,
+) -> EvaluationInput:
+    """捕获规划节点实际看到的输入轨迹，供评估器公平判断。"""
+    user_messages: list[str] = []
+    history: list[dict] = []
+    for m in messages:
+        if isinstance(m, HumanMessage):
+            content = m.content
+            if isinstance(content, str) and content.strip():
+                user_messages.append(content)
+        history.append(
+            {
+                "type": type(m).__name__,
+                "content": str(getattr(m, "content", ""))[:2000],
+            }
+        )
+    return EvaluationInput(
+        user_messages=user_messages,
+        history=history,
+        plan_status=plan_context,
+        current_time=current_time,
+    )
+
+
+async def _maybe_evaluate(
+    *,
+    trace_id: str,
+    eval_input: EvaluationInput,
+    messages: list[BaseMessage],
+    config: RunnableConfig,
+    runtime: Runtime[GraphContext],
+) -> None:
+    """按配置触发规划评估；未启用或被采样时静默跳过。"""
+    try:
+        app_config = runtime.context.app_config
+        plan_eval_cfg = getattr(app_config, "plan_evaluation", None)
+        if plan_eval_cfg is None or not getattr(plan_eval_cfg, "enabled", False):
+            # 未配置或未启用 → 跳过（实验性功能默认关闭）
+            return
+
+        # 合并维度：部分覆盖时保留默认开关（Pydantic default_factory 不自动合并）
+        _DEFAULT_DIMENSIONS = {
+            "clarification_quality": True,
+            "task_atomicity": True,
+            "agent_selection_validity": True,
+        }
+        dimensions = dict(getattr(plan_eval_cfg, "dimensions", {}) or {})
+        for key, default_val in _DEFAULT_DIMENSIONS.items():
+            dimensions.setdefault(key, default_val)
+
+        cfg = PlanEvaluationConfig(
+            enabled=getattr(plan_eval_cfg, "enabled", False),
+            sample_rate=getattr(plan_eval_cfg, "sample_rate", 1.0),
+            judge_model=getattr(plan_eval_cfg, "judge_model", None),
+            dimensions=dimensions,
+        )
+        if not cfg.enabled:
+            return
+
+        # 允许的 execution_agent 集合：内置 general_agent + 配置的 custom_agents
+        enabled_agents: set[str] = set()
+        subagents_cfg = getattr(app_config, "subagents", None)
+        if subagents_cfg is not None:
+            custom = getattr(subagents_cfg, "custom_agents", {}) or {}
+            enabled_agents = set(custom.keys())
+
+        # Judge LLM：优先用配置的 judge_model，否则用 plan_llm
+        judge_llm = None
+        if cfg.judge_model:
+            try:
+                from deerflow.agentsv2.lead_agent import create_llm_with_name
+
+                judge_llm = create_llm_with_name(config, model_name="evaluate_plan")
+            except Exception:
+                judge_llm = None
+        else:
+            judge_llm = runtime.context.plan_llm
+
+        evaluator = PlanEvaluator(
+            langfuse=runtime.context.langfuse_client,
+            enabled_agents=enabled_agents,
+            config=cfg,
+            judge_llm=judge_llm,
+        )
+        await evaluator.evaluate(
+            trace_id=trace_id,
+            eval_input=eval_input,
+            messages=messages,
+            config=config,
+        )
+    except Exception as exc:
+        logger.warning("Plan evaluation skipped: %s", exc)

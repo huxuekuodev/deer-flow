@@ -24,6 +24,7 @@ from deerflow.config.loop_detection_config import LoopDetectionConfig
 from deerflow.config.memory_config import MemoryConfig, load_memory_config_from_dict
 from deerflow.config.model_config import ModelConfig
 from deerflow.config.msg_history_config import MsgHistoryDatabaseConfig
+from deerflow.config.plan_evaluation_config import PlanEvaluationConfig
 from deerflow.config.reload_boundary import format_field_description
 from deerflow.config.run_events_config import RunEventsConfig
 from deerflow.config.runtime_paths import existing_project_file
@@ -177,6 +178,10 @@ class AppConfig(BaseModel):
         default_factory=LangfusePromptConfig,
         description="Langfuse prompt configuration.",
         validation_alias="langfuse_prompt_config",
+    )
+    plan_evaluation: PlanEvaluationConfig = Field(
+        default_factory=PlanEvaluationConfig,
+        description="规划节点 LLM-as-Judge 评估配置（实验性）。",
     )
 
     @field_validator("models", "tools", "tool_groups", mode="before")
