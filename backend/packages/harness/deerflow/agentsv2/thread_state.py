@@ -6,6 +6,7 @@ plan_tasks 使用 merge_plan_tasks reducer：
   - 相同 plan_id 的 subtask 状态字段（step_statuses/result/blocked_message）会被更新
   - 不可变字段（name/desc/deps/execution_agent/sort）不会被覆盖
   - 新的 subtask 会被追加
+  - 新计划（create 场景）由 plan_model_node 用 Overwrite 整体替换，绕过此 reducer
 """
 
 from copy import deepcopy

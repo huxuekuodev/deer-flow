@@ -44,13 +44,15 @@ class GraphAgent:
         # START → 规划
         builder.add_edge(START, "plan_model_node")
 
-        # 规划 → 有任务走调度，否则结束
+        # 规划 → 已完成（最终答案）直接结束；
+        # 有子任务走调度；无任务（澄清/直接回复）也结束
         builder.add_conditional_edges(
             "plan_model_node",
-            lambda s: "step_dispatch_node" if s.get("plan_tasks") else END,
+            lambda s: END if s.get("completed") else ("step_dispatch_node" if s.get("plan_tasks") else END),
         )
 
-        # 调度 → fan-out 路由：返回 [Send(...)] 或 END
+        # 调度 → fan-out 路由：返回 [Send(...)] 并行派发，
+        # 全部完成返回 "plan_model_node" 审查并给最终答案
         # step_fan_out_router 是纯路由函数（非节点），由 framework 调用
         builder.add_conditional_edges(
             "step_dispatch_node",
@@ -58,10 +60,7 @@ class GraphAgent:
         )
 
         # general_agent 完成 → 回到调度继续下一轮
-        builder.add_conditional_edges(
-            "general_agent",
-            step_fan_out_router,
-        )
+        builder.add_edge("general_agent", "step_dispatch_node")
 
         if self._checkpointer is not None:
             self._agent = builder.compile(checkpointer=self._checkpointer)
@@ -94,13 +93,7 @@ class GraphAgent:
         ]:
             input_data.setdefault(key, default)
 
-        async for st in agent.astream(
-            stream_mode=["values", "messages", "custom"],
-            input=input_data,
-            config=self.config,
-            context=ctx,
-            version="v2",
-        ):
+        async for st in agent.astream(stream_mode=["values", "messages", "custom"], input=input_data, config=self.config, context=ctx, version="v2", subgraphs=True):
             yield st
 
     def get_context(self) -> GraphContext:

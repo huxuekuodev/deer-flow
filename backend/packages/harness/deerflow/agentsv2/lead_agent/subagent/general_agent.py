@@ -52,12 +52,13 @@ async def general_agent(state: ThreadState, config: RunnableConfig, runtime: Run
     langfuse_client = runtime.context.langfuse_client
     system_prompt = langfuse_client.get_prompt("deerflow_v2/general_agent_system_prompt").compile(tools_desc=describe_execute_tools_v2())
     task_info = f"""任务名称：{task_name}
-        任务描述：{task_desc}
-        计划 ID：{plan_id}"""
+任务描述：{task_desc}
+计划 ID：{plan_id}
+<current_time>{runtime.context.current_time}</current_time>"""
 
     llm = create_llm(config)
     llm.bind_tools(get_execute_tools())
-    agent = create_agent(model=llm, system_prompt=system_prompt)
+    agent = create_agent(model=llm, system_prompt=system_prompt, name="general_agent")
     agent_result = await agent.ainvoke(
         {"messages": [HumanMessage(content=task_info)]},
         config=config,

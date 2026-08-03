@@ -3,29 +3,54 @@
 
 职责：
   1. 澄清：分析用户输入，模糊或缺失信息时调用 ask_clarification
-  2. 规划：需求明确后拆解为 SubTask DAG
+  2. 规划：需求明确后拆解为 SubTask DAG（模型直接输出计划 JSON）
   3. 审查：执行后审查结果，决定完成或 replan
 
-简化说明：
-  - 使用 create_agent 处理完整的 ReAct 循环，plan_model_node 不再手动管理 tool_calls
-  - create_agent 返回的 messages 中取最后一条（最终 AI 回复）写入 state
-  - plan_model_node 通过 _bridge_var (ContextVar) 从工具获取 plan_tasks 输出，用于路由到执行节点
+设计说明：
+  - 不再使用 create_plan / update_plan 工具（绕了三层间接：工具→bridge→哨兵/reducer）
+  - 模型通过结构化输出直接产出计划（PlanOutput），plan_model_node 解析为 SubTask
+  - 新计划（用户新需求）→ 用 Overwrite 整体替换旧计划（绕过 merge reducer）
+  - 状态更新（执行节点回写）→ 继续用 merge reducer 合并
+  - 仅保留 ask_clarification 工具（经 get_plan_tools 注入）
 """
+
+from typing import Any
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
-from langfuse import Langfuse
+from langfuse import Langfuse, get_client
 from langgraph.config import get_stream_writer
 from langgraph.runtime import Runtime
+from langgraph.types import Overwrite
+from pydantic import BaseModel, Field
 
+from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from deerflow.agentsv2.lead_agent import GraphContext
 from deerflow.agentsv2.nodes.constants import THINK_MES
-from deerflow.agentsv2.plan_toolkit import _bridge_var, create_plan, get_plan_status, update_plan
 from deerflow.agentsv2.subtask import SubTask
 from deerflow.agentsv2.thread_state import ThreadState
 from deerflow.core.context import trace_id_ctx_var
 from deerflow.core.log import logger
+
+
+class PlanTask(BaseModel):
+    """计划中的单个子任务（模型结构化输出）。"""
+
+    plan_id: str = Field(description="子任务唯一标识，如 task1 / task2")
+    name: str = Field(description="子任务名称（简短）")
+    desc: str = Field(description="子任务详细描述。可用 {其他任务plan_id} 引用依赖任务的结果")
+    execution_agent: str = Field(default="general_agent", description="执行此任务的 agent")
+    sort: int = Field(default=0, description="执行顺序序号")
+    deps: list[str] = Field(default_factory=list, description="依赖的子任务 plan_id 列表")
+
+
+class PlanOutput(BaseModel):
+    """规划节点的结构化输出。"""
+
+    action: str = Field(description="create: 创建全新计划（替换旧计划）；update: 更新现有计划状态")
+    title: str = Field(default="", description="计划标题")
+    tasks: list[PlanTask] = Field(default_factory=list, description="子任务列表")
 
 
 def _build_system_prompt(agent_descriptions: str = "", capability_descriptions: str = "") -> str:
@@ -36,12 +61,26 @@ def _build_system_prompt(agent_descriptions: str = "", capability_descriptions: 
     )
 
 
+def _to_subtask(t: PlanTask) -> SubTask:
+    """将 PlanTask 转换为 SubTask。"""
+    return SubTask(
+        plan_id=t.plan_id,
+        name=t.name,
+        desc=t.desc,
+        execution_agent=t.execution_agent,
+        sort=t.sort,
+        deps=t.deps,
+    )
+
+
 async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: Runtime[GraphContext]) -> dict:
     context = runtime.context
     llm = context.plan_llm
     writer = get_stream_writer()
     trace_id = trace_id_ctx_var.get()
 
+    # 获取已有任务列表（review/replan 场景）
+    existing_tasks = state.get("plan_tasks", [])
     writer({"type": THINK_MES, "messages": "📋 分析需求，制定执行计划...", "trace_id": trace_id})
 
     # 构建 system prompt
@@ -49,57 +88,55 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
 
     capability_desc = describe_execute_tools()
 
-    # 获取已有任务列表（review/replan 场景）
-    existing_tasks = state.get("plan_tasks", [])
     plan_context = ""
     if existing_tasks:
-        plan_context = "\n".join(f"- [{t.step_statuses}] {t.name}: {t.result[:200] if t.result else '待执行'}" for t in existing_tasks)
+        plan_context = "\n".join(f"- [{t.step_statuses}] {t.name}: {t.result if t.result else '待执行'}" for t in existing_tasks)
 
     # 构建消息
     messages: list[BaseMessage] = []
-    context_lines = []
-    user_msg = state.get("user_message", "")
-    if user_msg:
-        context_lines.append(f"<UserRequest>{user_msg}</UserRequest>")
-    if plan_context:
-        context_lines.append(f"<PlanStatus>{plan_context}</PlanStatus>")
-    if context_lines:
-        messages.append(HumanMessage(content="\n".join(context_lines)))
     user_msgs = state.get("messages", [])
     messages.extend(user_msgs)
+    context_lines = []
+    if plan_context:
+        context_lines.append(f"""<PlanStatus>\n当前计划
+        {plan_context}\n\n
+        </PlanStatus>""")
+    if context_lines:
+        messages.append(HumanMessage(content="\n".join(context_lines)))
+    # 注入当前时间（供 agent 处理日期相关任务，如"今日天气"）
+    # TODO 验证state中是否有current_time, 如果有判断是否是今日，如果不是注入新的日期，如果是不重复注入当日日期
+    messages.append(HumanMessage(content=f"<current_time>{context.current_time}</current_time>"))
 
-    # 将 ThreadState 中的 plan_tasks 注入桥接层，供 get_plan_status 工具读取
-    bridge = _bridge_var.get()
-    bridge["plan_tasks"] = list(existing_tasks)
-    bridge["created_task_dicts"] = None  # 重置
-    _bridge_var.set(bridge)
-
-    # 绑定工具并创建 agent（create_agent 内部自动处理 ReAct 循环）
-    plan_tools = [create_plan, update_plan, get_plan_status] + get_plan_tools()
+    # 绑定工具：仅 ask_clarification（get_plan_tools 已包含）
+    plan_tools = get_plan_tools()
     bound_llm = llm.bind_tools(plan_tools)
     agent = create_agent(
         bound_llm,
         plan_tools,
+        middleware=[ClarificationMiddleware()],
+        name="plan_agent",
+        response_format=PlanOutput,
         system_prompt=_build_system_prompt(capability_descriptions=capability_desc),
     )
 
     for attempt in range(1, 4):
         try:
-            # create_agent.ainvoke({"messages": [...]}) 返回 {"messages": [完整 ReAct 消息列表]}
             agent_output = await agent.ainvoke({"messages": messages}, config=config)
+            agent_msgs: list[Any] = agent_output.get("messages", []) if isinstance(agent_output, dict) else []
+            langfuse = get_client()
+            with langfuse.start_as_current_observation(as_type="span", name="call-research-sub-agent", trace_context={"trace_id": trace_id}) as span:
+                span.update(input=messages[-1].content, output=agent_msgs[-1].content)
+            # 检查是否有澄清（agent 调用了 ask_clarification → 会 interrupt）
+            # ainvoke 返回的最终 state 里若出现 ToolMessage 且无 plan 输出，说明是澄清
+            has_clarification = any(isinstance(m, AIMessage) and getattr(m, "tool_calls", None) and any(tc.get("name") == "ask_clarification" for tc in m.tool_calls) for m in agent_msgs)
+            if has_clarification:
+                writer({"type": THINK_MES, "messages": "📋 需要澄清需求", "trace_id": trace_id})
+                return {"messages": agent_msgs, "completed": True}
 
-            # 取最终回复（最后一条 message）
-            agent_msgs = agent_output.get("messages", [])
-            final_msg = agent_msgs[-1] if agent_msgs else AIMessage(content="计划生成失败")
-
-            # 检查桥接层：create_plan/update_plan 是否创建了新任务
-            bridge = _bridge_var.get()
-            created_dicts = bridge.get("created_task_dicts")
-
-            if created_dicts:
-                subtasks = [SubTask(**t) for t in created_dicts]
-                bridge["created_task_dicts"] = None
-                _bridge_var.set(bridge)
+            # 尝试从最终回复解析结构化输出
+            plan_output = _extract_plan_output(agent_output)
+            if plan_output and plan_output.tasks:
+                subtasks = [_to_subtask(t) for t in plan_output.tasks]
                 writer(
                     {
                         "type": THINK_MES,
@@ -108,11 +145,15 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
                         "trace_id": trace_id,
                     }
                 )
-                return {"messages": [final_msg], "plan_tasks": subtasks}
+                if plan_output.action == "create":
+                    # 新计划：整体替换旧计划（Overwrite 绕过 merge reducer）
+                    return {"messages": agent_msgs, "plan_tasks": Overwrite(value=subtasks)}
+                # update：合并到现有计划
+                return {"messages": agent_msgs, "plan_tasks": subtasks}
 
-            # 没有创建计划 → agent 直接回复（澄清、审查结论等）
+            # 没有计划输出 → agent 直接回复（澄清、审查结论等）
             writer({"type": THINK_MES, "messages": "📋 规划完成", "trace_id": trace_id})
-            return {"messages": [final_msg], "completed": True}
+            return {"messages": agent_msgs, "completed": True}
 
         except Exception as e:
             logger.error("Plan 第 {} 次失败: {}", attempt, e, extra={"trace_id": trace_id})
@@ -120,3 +161,52 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
                 return {"messages": [AIMessage(content="计划生成失败，请重新描述需求。")], "completed": True}
 
     return {"completed": True}
+
+
+def _extract_plan_output(agent_output: dict) -> PlanOutput | None:
+    """从 agent 输出中提取结构化计划。
+
+    兼容两种形态：
+      1. 模型直接输出 PlanOutput 对象（structured output）
+      2. 最终 AIMessage 里带结构化内容（部分模型）
+    """
+    if not isinstance(agent_output, dict):
+        return None
+
+    messages = agent_output.get("messages", [])
+    if not messages:
+        return None
+
+    # 查找带结构化输出的消息
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage):
+            # 结构化输出通常放在 additional_kwargs 或 content 的 JSON 里
+            plan = _try_parse_plan(msg)
+            if plan:
+                return plan
+    return None
+
+
+def _try_parse_plan(msg: AIMessage) -> PlanOutput | None:
+    """尝试从 AIMessage 解析 PlanOutput。"""
+
+    # 1. 结构化输出注入到 content（JSON 字符串）
+    content = getattr(msg, "content", None)
+    if isinstance(content, str) and content.strip():
+        try:
+            return PlanOutput.model_validate_json(content)
+        except Exception:
+            pass
+
+    # 2. additional_kwargs 里的 parsed
+    try:
+        kwargs = getattr(msg, "additional_kwargs", {}) or {}
+        for key in ("parsed", "tool_call", "structured_output"):
+            if key in kwargs:
+                val = kwargs[key]
+                if isinstance(val, dict):
+                    return PlanOutput.model_validate(val)
+    except Exception:
+        pass
+
+    return None

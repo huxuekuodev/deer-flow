@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from langchain.chat_models import BaseChatModel
 from langfuse import Langfuse
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,4 +32,9 @@ class GraphContext(BaseModel):
         default=None,
         exclude=True,
         description="Plan 存储（内存或 Redis）。",
+    )
+
+    current_time: str = Field(
+        default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        description="当前时间（注入到 agent 上下文，用于日期相关的任务）。",
     )

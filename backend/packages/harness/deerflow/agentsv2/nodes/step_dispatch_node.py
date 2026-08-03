@@ -67,9 +67,9 @@ async def step_dispatch_node(state: ThreadState, **kwargs) -> dict:
             status_updates.append(SubTask(plan_id=task.plan_id, step_statuses="in_progress"))
 
     if not status_updates:
-        # 全部完成
-        all_done = all(t.step_statuses == "completed" for t in plan_tasks)
-        return {"completed": True} if all_done else {}
+        # 全部完成 → 返回空（不设置 completed），
+        # 由 step_fan_out_router 路由回 plan_model_node 生成最终答案
+        return {}
 
     return {"plan_tasks": status_updates}
 
@@ -81,7 +81,8 @@ def step_fan_out_router(state: ThreadState) -> list[Send] | str:
 
     Returns:
         - list[Send]: 有可执行任务时并行派发到 execution_agent
-        - END: 没有可派发任务
+        - "plan_model_node": 全部任务完成，回到规划节点审查并给出最终答案
+        - END: 没有可派发任务且未全部完成（避免死循环）
     """
     plan_tasks = state.get("plan_tasks", [])
     if not plan_tasks:
@@ -107,4 +108,13 @@ def step_fan_out_router(state: ThreadState) -> list[Send] | str:
             )
         )
 
-    return sends if sends else END
+    if sends:
+        return sends
+
+    # 没有 in_progress 任务：
+    #   - 全部完成 → 回到规划节点审查并给出最终答案
+    #   - 仍有阻塞/未完成任务 → 结束（避免死循环）
+    if all(t.step_statuses == "completed" for t in plan_tasks):
+        return "plan_model_node"
+
+    return END

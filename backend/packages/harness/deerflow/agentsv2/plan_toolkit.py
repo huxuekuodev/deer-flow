@@ -16,7 +16,10 @@ from deerflow.agentsv2.subtask import SubTask
 
 # 桥接层（ContextVar，线程/异步安全）：plan_model_node 在调用 create_agent 前注入 plan_tasks，
 # 工具将创建/查询结果写回，plan_model_node 在 agent.ainvoke 后读取。
-_bridge_var: ContextVar[dict[str, Any]] = ContextVar("plan_toolkit_bridge", default={"plan_tasks": [], "created_task_dicts": None})
+_bridge_var: ContextVar[dict[str, Any]] = ContextVar(
+    "plan_toolkit_bridge",
+    default={"plan_tasks": [], "created_task_dicts": None, "action": None},
+)
 
 
 def _get_bridge() -> dict[str, Any]:
@@ -101,6 +104,9 @@ async def create_plan(
     """
     创建 DAG 计划。将用户需求拆解为多个子任务。
 
+    ⚠️ 当用户提出新的需求/新任务时，必须调用 create_plan 创建全新计划，
+    它会覆盖（替换）当前已有的旧计划。不要将新任务与旧任务混在一起。
+
     Args:
         title: 计划标题，概括任务目标
         tasks: 子任务列表。每个元素是 JSON 对象，包含：
@@ -152,7 +158,10 @@ async def create_plan(
     dep_count = sum(len(t.deps) for t in subtasks)
 
     # 写回桥接层，plan_model_node 在 agent.ainvoke 后读取
-    _get_bridge()["created_task_dicts"] = [t.model_dump() for t in subtasks]
+    # action="create" → 全量替换旧计划（新任务覆盖旧任务）
+    bridge = _get_bridge()
+    bridge["created_task_dicts"] = [t.model_dump() for t in subtasks]
+    bridge["action"] = "create"
 
     # 返回 JSON 序列化结果
     result = {
@@ -226,7 +235,10 @@ async def update_plan(
         )
 
     # 写回桥接层，plan_model_node 在 agent.ainvoke 后读取
-    _get_bridge()["created_task_dicts"] = [t.model_dump() for t in subtasks]
+    # action="update" → 在当前计划内合并（不替换旧任务）
+    bridge = _get_bridge()
+    bridge["created_task_dicts"] = [t.model_dump() for t in subtasks]
+    bridge["action"] = "update"
 
     result = {
         "action": "plan_updated",
