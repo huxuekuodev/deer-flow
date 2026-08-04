@@ -54,7 +54,11 @@ members = ["packages/harness"]
 deerflow-harness = { workspace = true }
 
 
-[tool.pyright]
-venvPath = "../../"
-venv = ".venv"
- 
+[tool.pyrefly]
+# 显式指定项目 venv，让 Pyrefly 读到 editable 安装的 deerflow-harness
+python-interpreter = ".venv/bin/python3"
+# search-path = ["packages/harness"]
+project-includes = ["."]
+
+[tool.hatch.build.targets.wheel]
+packages = ["deerflow"]

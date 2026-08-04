@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.runtime import Runtime
 
-from deerflow.agentsv2.lead_agent import GraphContext, create_llm
+from deerflow.agentsv2.lead_agent import GraphContext, create_llm_with_name
 from deerflow.agentsv2.subtask import SubTask
 from deerflow.agentsv2.thread_state import ThreadState
 from deerflow.tools.v2 import describe_execute_tools_v2, get_execute_tools
@@ -50,15 +50,17 @@ async def general_agent(state: ThreadState, config: RunnableConfig, runtime: Run
 
     # === 2. 调用 LLM 执行任务 ===
     langfuse_client = runtime.context.langfuse_client
+    if langfuse_client is None:
+        raise RuntimeError("langfuse_client is required in GraphContext")
     system_prompt = langfuse_client.get_prompt("deerflow_v2/general_agent_system_prompt").compile(tools_desc=describe_execute_tools_v2())
     task_info = f"""任务名称：{task_name}
 任务描述：{task_desc}
 计划 ID：{plan_id}
 <current_time>{runtime.context.current_time}</current_time>"""
 
-    llm = create_llm(config)
-    llm.bind_tools(get_execute_tools())
-    agent = create_agent(model=llm, system_prompt=system_prompt, name="general_agent")
+    llm = create_llm_with_name(config, model_name="general_node_model")
+    # create_agent 的 tools 参数会在内部自动 bind_tools，无需手动绑定
+    agent = create_agent(model=llm, tools=get_execute_tools(), system_prompt=system_prompt, name="general_node_agent")
     agent_result = await agent.ainvoke(
         {"messages": [HumanMessage(content=task_info)]},
         config=config,

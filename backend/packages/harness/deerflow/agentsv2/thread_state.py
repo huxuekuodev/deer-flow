@@ -10,10 +10,11 @@ plan_tasks 使用 merge_plan_tasks reducer：
 """
 
 from copy import deepcopy
-from typing import Annotated, TypedDict
+from typing import Annotated
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
+from typing_extensions import TypedDict
 
 from deerflow.agentsv2.subtask import SubTask
 
@@ -70,3 +71,8 @@ class ThreadState(TypedDict, total=False):
 
     # 最终答案
     final_answer: str
+
+    # 由 step_fan_out_router 通过 Send 派发到执行 agent 时注入的字段
+    plan_id: str
+    task_name: str
+    task_desc: str

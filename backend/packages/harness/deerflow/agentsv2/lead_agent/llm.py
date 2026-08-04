@@ -60,7 +60,7 @@ def create_llm(config: RunnableConfig, *, app_config: AppConfig | None = None):
     return llm
 
 
-def create_llm_with_name(config: RunnableConfig, *, app_config: AppConfig | None = None, model_name: str = None):
+def create_llm_with_name(config: RunnableConfig, *, app_config: AppConfig | None = None, model_name: str | None = None):
     """
     创建计划 + 执行 LLM。
     关闭 thinking 以支持 structured output 和 tool binding。

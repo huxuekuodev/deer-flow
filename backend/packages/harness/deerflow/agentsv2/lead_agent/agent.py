@@ -6,10 +6,14 @@ step_fan_out_router 是路由函数（不是节点），由 add_conditional_edge
 当返回 END 时流程结束。
 """
 
+from typing import Any, cast
+
 from langchain_core.runnables import RunnableConfig
 from langfuse import Langfuse
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import RetryPolicy
 
+from deerflow.agentsv2.errors import should_retry
 from deerflow.agentsv2.lead_agent import GraphContext, create_llm
 from deerflow.agentsv2.lead_agent.subagent.general_agent import general_agent
 from deerflow.agentsv2.nodes import (
@@ -23,25 +27,38 @@ from deerflow.config.app_config import get_app_config
 from deerflow.core.context import trace_id_ctx_var
 from deerflow.runtime import RunContext
 
+# 规划节点重试策略：仅对可恢复的 LLM 错误重试（超时/连接/5xx/429/服务繁忙），
+# 欠费/认证失败等不可恢复错误不重试（直接返回友好提示）。
+_PLAN_RETRY_POLICY = RetryPolicy(
+    max_attempts=3,  # 首次 + 2 次重试
+    retry_on=should_retry,  # 复用 v2 errors 模块的错误分类
+    initial_interval=0.5,  # 首次重试前等待 0.5s
+    backoff_factor=2.0,  # 指数退避：0.5 → 1 → 2s
+    jitter=True,  # 加随机抖动防惊群
+)
+
 
 class GraphAgent:
     def __init__(self, config: RunnableConfig, runcontext: RunContext):
         self.config = config
         self._app_config = get_app_config()
         self._checkpointer = runcontext.checkpointer if runcontext else None
-        self._agent = None
+        # 编译后的图类型依赖 compile() 的参数，泛型过于复杂且与静态检查摩擦大，
+        # 统一用 Any（运行时安全，LangGraph 自身也推荐将编译图当作黑盒）。
+        self._agent: Any = None
 
-    def _build_graph(self) -> StateGraph:
+    def _build_graph(self) -> Any:
         if self._agent is not None:
             return self._agent
-
         builder = StateGraph(ThreadState, context_schema=GraphContext)
 
-        builder.add_node("plan_model_node", plan_model_node)
-        builder.add_node("step_dispatch_node", step_dispatch_node)
-        builder.add_node("general_agent", general_agent)
+        # 节点函数返回 Partial<State>（dict），与 StateNode 严格签名有摩擦，
+        # 但这是 LangGraph 的标准用法；用 cast 消除静态噪音。
+        builder.add_node("plan_model_node", cast(Any, plan_model_node), retry_policy=_PLAN_RETRY_POLICY)
+        builder.add_node("step_dispatch_node", cast(Any, step_dispatch_node))
+        builder.add_node("general_agent", cast(Any, general_agent))
 
-        # START → 规划
+        # START → 规划·
         builder.add_edge(START, "plan_model_node")
 
         # 规划 → 已完成（最终答案）直接结束；
@@ -72,7 +89,11 @@ class GraphAgent:
     async def astream(self, messages, trace_id=None):
         tid = trace_id or trace_id_ctx_var.get()
         if tid:
-            self.config["trace_id"] = tid
+            # trace_id 放进 configurable（RunnableConfig 的标准扩展字段），
+            # 与 v1 保持一致，避免在 TypedDict 上写未声明键。
+            configurable = dict(self.config.get("configurable") or {})
+            configurable["trace_id"] = tid
+            self.config["configurable"] = configurable
 
         agent = self._build_graph()
         ctx = self.get_context()

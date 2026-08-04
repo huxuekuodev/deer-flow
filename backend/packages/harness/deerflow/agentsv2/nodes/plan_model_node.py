@@ -14,7 +14,7 @@
   - 仅保留 ask_clarification 工具（经 get_plan_tools 注入）
 """
 
-from typing import Any
+from typing import Any, cast
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -27,12 +27,13 @@ from pydantic import BaseModel, Field
 
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
 from deerflow.agentsv2.current_time import has_current_time_for_today
+from deerflow.agentsv2.errors import build_error_fallback_message, classify_llm_error
 from deerflow.agentsv2.evaluation.plan_evaluator import (
     EvaluationInput,
     PlanEvaluationConfig,
     PlanEvaluator,
 )
-from deerflow.agentsv2.lead_agent import GraphContext
+from deerflow.agentsv2.lead_agent import GraphContext, create_llm_with_name
 from deerflow.agentsv2.nodes.constants import THINK_MES
 from deerflow.agentsv2.subtask import SubTask
 from deerflow.agentsv2.thread_state import ThreadState
@@ -81,7 +82,8 @@ def _to_subtask(t: PlanTask) -> SubTask:
 
 async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: Runtime[GraphContext]) -> dict:
     context = runtime.context
-    llm = context.plan_llm
+    # llm = context.plan_llm
+    # assert llm is not None, "plan_llm is required in GraphContext"
     writer = get_stream_writer()
     trace_id = trace_id_ctx_var.get()
 
@@ -122,77 +124,82 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
         current_time=context.current_time,
     )
 
-    # 绑定工具：仅 ask_clarification（get_plan_tools 已包含）
+    # 绑定工具：仅 ask_clarification（get_plan_tools 已包含）。
     plan_tools = get_plan_tools()
-    bound_llm = llm.bind_tools(plan_tools)
     agent = create_agent(
-        bound_llm,
+        create_llm_with_name(config, model_name="plan_node_model"),
         plan_tools,
         middleware=[ClarificationMiddleware()],
-        name="plan_agent",
+        name="plan_node_agent",
         response_format=PlanOutput,
         system_prompt=_build_system_prompt(capability_descriptions=capability_desc),
     )
 
-    for attempt in range(1, 4):
-        try:
-            agent_output = await agent.ainvoke({"messages": messages}, config=config)
-            agent_msgs: list[Any] = agent_output.get("messages", []) if isinstance(agent_output, dict) else []
+    # 规划节点重试机制：由 LangGraph 的 retry_policy（见 lead_agent/agent.py）接管。
+    # 可恢复的 LLM 错误（超时/连接/5xx/429/服务繁忙）→ raise 交由 retry_policy 重试；
+    # 欠费/认证失败等不可恢复错误 → 直接返回中文友好提示。
+    try:
+        # cast: create_agent 的输入类型是 _InputAgentState，实际传入 dict[str, list[BaseMessage]]
+        # 是 langchain 标准用法，运行时安全；cast 消除静态类型噪音。
+        agent_output = await agent.ainvoke(cast(Any, {"messages": messages}), config=config)
+        agent_msgs: list[Any] = agent_output.get("messages", []) if isinstance(agent_output, dict) else []
 
-            # 判定 agent 的实际输出类型（不管进哪个分支，都先评估）。
-            # 注意：agent_output["messages"] 包含历史 + 本轮新增，若遍历全部，
-            # 历史中曾出现过的 ask_clarification 调用会让 has_clarification 永远为 True
-            # （用户已澄清后仍误判为"等待澄清"）。因此只检查「本轮新增」的消息。
-            input_msg_ids = {getattr(m, "id", None) for m in messages if getattr(m, "id", None)}
-            new_msgs = [m for m in agent_msgs if getattr(m, "id", None) not in input_msg_ids]
-            has_clarification = any(isinstance(m, AIMessage) and getattr(m, "tool_calls", None) and any(tc.get("name") == "ask_clarification" for tc in m.tool_calls) for m in new_msgs)
-            plan_output = _extract_plan_output(agent_output)
+        # 判定 agent 的实际输出类型（不管进哪个分支，都先评估）。
+        # 注意：agent_output["messages"] 包含历史 + 本轮新增，若遍历全部，
+        # 历史中曾出现过的 ask_clarification 调用会让 has_clarification 永远为 True
+        # （用户已澄清后仍误判为"等待澄清"）。因此只检查「本轮新增」的消息。
+        input_msg_ids = {getattr(m, "id", None) for m in messages if getattr(m, "id", None)}
+        new_msgs = [m for m in agent_msgs if getattr(m, "id", None) not in input_msg_ids]
+        has_clarification = any(isinstance(m, AIMessage) and getattr(m, "tool_calls", None) and any(tc.get("name") == "ask_clarification" for tc in m.tool_calls) for m in new_msgs)
+        plan_output = _extract_plan_output(agent_output)
 
-            # 填充评估输入，统一触发评估（覆盖澄清 / 规划 / 直接回复 全部分支）
-            eval_input.clarification_requested = has_clarification
-            if plan_output:
-                eval_input.plan_action = plan_output.action
-                eval_input.tasks = [t.model_dump() for t in plan_output.tasks]
-            await _maybe_evaluate(
-                trace_id=trace_id,
-                eval_input=eval_input,
-                messages=messages,
-                config=config,
-                runtime=runtime,
-            )
+        # 填充评估输入，统一触发评估（覆盖澄清 / 规划 / 直接回复 全部分支）
+        eval_input.clarification_requested = has_clarification
+        if plan_output:
+            eval_input.plan_action = plan_output.action
+            eval_input.tasks = [t.model_dump() for t in plan_output.tasks]
+        await _maybe_evaluate(
+            trace_id=trace_id,
+            eval_input=eval_input,
+            messages=messages,
+            config=config,
+            runtime=runtime,
+        )
 
-            # 澄清：需求含糊时 agent 调用了 ask_clarification → 中断等待用户
-            if has_clarification:
-                writer({"type": THINK_MES, "messages": "📋 需要澄清需求", "trace_id": trace_id})
-                return {"messages": agent_msgs, "completed": True}
-
-            # 规划：模型输出了有效计划
-            if plan_output and plan_output.tasks:
-                subtasks = [_to_subtask(t) for t in plan_output.tasks]
-                writer(
-                    {
-                        "type": THINK_MES,
-                        "messages": f"📋 规划完成，共 {len(subtasks)} 个子任务",
-                        "task_count": len(subtasks),
-                        "trace_id": trace_id,
-                    }
-                )
-                if plan_output.action == "create":
-                    # 新计划：整体替换旧计划（Overwrite 绕过 merge reducer）
-                    return {"messages": agent_msgs, "plan_tasks": Overwrite(value=subtasks)}
-                # update：合并到现有计划
-                return {"messages": agent_msgs, "plan_tasks": subtasks}
-
-            # 没有计划输出 → agent 直接回复（澄清、审查结论等）
-            writer({"type": THINK_MES, "messages": "📋 规划完成", "trace_id": trace_id})
+        # 澄清：需求含糊时 agent 调用了 ask_clarification → 中断等待用户
+        if has_clarification:
+            writer({"type": THINK_MES, "messages": "📋 需要澄清需求", "trace_id": trace_id})
             return {"messages": agent_msgs, "completed": True}
 
-        except Exception as e:
-            logger.error("Plan 第 {} 次失败: {}", attempt, e, extra={"trace_id": trace_id})
-            if attempt == 3:
-                return {"messages": [AIMessage(content="计划生成失败，请重新描述需求。")], "completed": True}
+        # 规划：模型输出了有效计划
+        if plan_output and plan_output.tasks:
+            subtasks = [_to_subtask(t) for t in plan_output.tasks]
+            writer(
+                {
+                    "type": THINK_MES,
+                    "messages": f"📋 规划完成，共 {len(subtasks)} 个子任务",
+                    "task_count": len(subtasks),
+                    "trace_id": trace_id,
+                }
+            )
+            if plan_output.action == "create":
+                # 新计划：整体替换旧计划（Overwrite 绕过 merge reducer）
+                return {"messages": agent_msgs, "plan_tasks": Overwrite(value=subtasks)}
+            # update：合并到现有计划
+            return {"messages": agent_msgs, "plan_tasks": subtasks}
 
-    return {"completed": True}
+        # 没有计划输出 → agent 直接回复（澄清、审查结论等）
+        writer({"type": THINK_MES, "messages": "📋 规划完成", "trace_id": trace_id})
+        return {"messages": agent_msgs, "completed": True}
+
+    except Exception as e:
+        retriable, reason = classify_llm_error(e)
+        logger.error("Plan 节点失败 (reason={}): {}", reason, e, extra={"trace_id": trace_id})
+        if retriable:
+            # 可恢复错误（超时/连接/5xx/429/繁忙）：抛给 LangGraph retry_policy 重试
+            raise
+        # 不可恢复错误（欠费/认证/未知）：直接返回友好提示
+        return {"messages": [build_error_fallback_message(e)], "completed": True}
 
 
 def _extract_plan_output(agent_output: dict) -> PlanOutput | None:
@@ -331,12 +338,12 @@ async def _maybe_evaluate(
             enabled_agents = set(custom.keys())
 
         # Judge LLM：优先用配置的 judge_model，否则用 plan_llm
-        judge_llm = None
+        judge_llm: Any | None = None
         if cfg.judge_model:
             try:
                 from deerflow.agentsv2.lead_agent import create_llm_with_name
 
-                judge_llm = create_llm_with_name(config, model_name="evaluate_plan")
+                judge_llm = create_llm_with_name(config, model_name="evaluate_model")
             except Exception:
                 judge_llm = None
         else:

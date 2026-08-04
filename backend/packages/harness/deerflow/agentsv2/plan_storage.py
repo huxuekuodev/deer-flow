@@ -115,11 +115,13 @@ def get_plan_storage() -> PlanStorage:
             from deerflow.config.app_config import get_app_config
 
             config = get_app_config()
-            if config.agentsv2 and config.agentsv2.plan_redis_enabled and config.agentsv2.plan_redis_url:
+            # agentsv2 配置节可能不存在（旧引用），用 getattr 安全访问
+            agentsv2_cfg = getattr(config, "agentsv2", None)
+            if agentsv2_cfg and getattr(agentsv2_cfg, "plan_redis_enabled", False) and getattr(agentsv2_cfg, "plan_redis_url", None):
                 import redis.asyncio as aioredis
 
-                r = aioredis.from_url(config.agentsv2.plan_redis_url)
-                _storage = RedisPlanStorage(r, ttl=config.agentsv2.plan_redis_ttl or 86400)
+                r = aioredis.from_url(agentsv2_cfg.plan_redis_url)
+                _storage = RedisPlanStorage(r, ttl=getattr(agentsv2_cfg, "plan_redis_ttl", None) or 86400)
             else:
                 _storage = MemoryPlanStorage()
         except Exception:

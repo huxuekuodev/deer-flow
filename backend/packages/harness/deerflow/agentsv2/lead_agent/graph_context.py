@@ -16,19 +16,19 @@ class GraphContext(BaseModel):
     app_config: AppConfig
     """全局配置。"""
 
-    plan_llm: BaseChatModel = Field(
+    plan_llm: BaseChatModel | None = Field(
         default=None,
         exclude=True,
         description="用于计划和执行的 LLM。",
     )
 
-    langfuse_client: Langfuse = Field(
+    langfuse_client: Langfuse | None = Field(
         default=None,
         exclude=True,
         description="Langfuse 追踪客户端。",
     )
 
-    plan_storage: PlanStorage = Field(
+    plan_storage: PlanStorage | None = Field(
         default=None,
         exclude=True,
         description="Plan 存储（内存或 Redis）。",
