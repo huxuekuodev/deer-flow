@@ -26,6 +26,7 @@ from langgraph.types import Overwrite
 from pydantic import BaseModel, Field
 
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
+from deerflow.agentsv2.current_time import has_current_time_for_today
 from deerflow.agentsv2.evaluation.plan_evaluator import (
     EvaluationInput,
     PlanEvaluationConfig,
@@ -109,8 +110,10 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
     if context_lines:
         messages.append(HumanMessage(content="\n".join(context_lines)))
     # 注入当前时间（供 agent 处理日期相关任务，如"今日天气"）
-    # TODO 验证state中是否有current_time, 如果有判断是否是今日，如果不是注入新的日期，如果是不重复注入当日日期
-    messages.append(HumanMessage(content=f"<current_time>{context.current_time}</current_time>"))
+    # 若 state.messages 中已存在今天的 <current_time> 则不重复注入；
+    # 只有不存在或已过期（非今天）时才追加一条新的当前时间消息。
+    if not has_current_time_for_today(user_msgs):
+        messages.append(HumanMessage(content=f"<current_time>{context.current_time}</current_time>"))
 
     # 捕获评估输入轨迹（规划 agent 实际看到的全部上下文，用于公平评估）
     eval_input = _capture_eval_input(
