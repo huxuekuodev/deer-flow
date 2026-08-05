@@ -98,7 +98,7 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
 
     plan_context = ""
     if existing_tasks:
-        plan_context = "\n".join(f"- [{t.step_statuses}] {t.name}: {t.result if t.result else '待执行'}" for t in existing_tasks)
+        plan_context = "\n".join(f"- [{t.step_statuses}] plan_id: {t.plan_id}: 任务名称: {t.name}: 执行结果：【{t.result if t.result else '待执行'}】" for t in existing_tasks)
 
     # 构建消息
     messages: list[BaseMessage] = []
@@ -182,10 +182,12 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
                     "trace_id": trace_id,
                 }
             )
-            if plan_output.action == "create":
-                # 新计划：整体替换旧计划（Overwrite 绕过 merge reducer）
+            # 只有当「无已有计划」时才整体替换；已有计划时一律 merge（保留旧任务，增补新任务），
+            # 防止模型误判 create 导致旧任务被相同任务替换掉。
+            if plan_output.action == "create" and not existing_tasks:
+                # 全新计划：整体替换（Overwrite 绕过 merge reducer）
                 return {"messages": agent_msgs, "plan_tasks": Overwrite(value=subtasks)}
-            # update：合并到现有计划
+            # 已有计划（或 action=update）：合并到现有计划，保留旧任务
             return {"messages": agent_msgs, "plan_tasks": subtasks}
 
         # 没有计划输出 → agent 直接回复（澄清、审查结论等）
