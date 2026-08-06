@@ -172,7 +172,7 @@ async def main():
 
     config: RunnableConfig = {
         "configurable": {
-            "thread_id": "debug-thread-051",
+            "thread_id": "debug-thread-052",
             "thinking_enabled": True,
             "is_plan_mode": True,
             "model_name": "deepseek-reasoner",
@@ -187,7 +187,7 @@ async def main():
     ):
         runcontext = RunContext(checkpointer=checkpointer, msg_history_pool=msg_history_pool)
         agent = GraphAgent(config, runcontext)
-        userquery = "当前基本信息已足够，不需要补充"
+        userquery = "北京8月5号天气"
         state = {"messages": [HumanMessage(content=userquery)]}
         await record_message(msg_history_pool, content=userquery, role=1, user_id="huxuekuo", thread_id="debug-thread-012", run_id="trace_id", model_name="deepseek-reasoner", metadata={})
 

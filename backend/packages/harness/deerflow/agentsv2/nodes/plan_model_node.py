@@ -55,9 +55,10 @@ class PlanTask(BaseModel):
 class PlanOutput(BaseModel):
     """规划节点的结构化输出。"""
 
-    action: str = Field(description="create: 创建全新计划（替换旧计划）；update: 更新现有计划状态")
+    action: str = Field(description="create: 创建全新计划（替换旧计划）；update: 更新现有计划状态；complete: 反思通过，直接给答案")
     title: str = Field(default="", description="计划标题")
     tasks: list[PlanTask] = Field(default_factory=list, description="子任务列表")
+    answer: str = Field(default="", description="action=complete 时的最终答案文本，其他情况为空字符串")
 
 
 def _build_system_prompt(agent_descriptions: str = "", capability_descriptions: str = "") -> str:
@@ -170,6 +171,12 @@ async def plan_model_node(state: ThreadState, config: RunnableConfig, runtime: R
         if has_clarification:
             writer({"type": THINK_MES, "messages": "📋 需要澄清需求", "trace_id": trace_id})
             return {"messages": agent_msgs, "completed": True}
+
+        # 反思通过：action=complete 且有最终答案 → 作为 AIMessage 追加到 messages 作为回复
+        if plan_output and plan_output.action == "complete" and plan_output.answer:
+            answer_msg = AIMessage(content=plan_output.answer)
+            writer({"type": THINK_MES, "messages": "📋 反思通过，生成最终答案", "trace_id": trace_id})
+            return {"messages": [answer_msg], "completed": True}
 
         # 规划：模型输出了有效计划
         if plan_output and plan_output.tasks:

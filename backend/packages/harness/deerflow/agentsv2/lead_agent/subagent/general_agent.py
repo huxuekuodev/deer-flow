@@ -69,7 +69,7 @@ async def general_agent(state: ThreadState, config: RunnableConfig, runtime: Run
     final_msg = agent_msgs[-1] if agent_msgs else AIMessage(content="")
     task_result = final_msg.content if hasattr(final_msg, "content") else str(final_msg)
     # === 3. 修改任务状态为 completed ===
-    return {"plan_tasks": [SubTask(plan_id=plan_id, step_statuses="completed", result=str(task_result)[:2000])]}
+    return {"plan_tasks": [SubTask(plan_id=plan_id, step_statuses="completed", result=str(task_result))]}
 
 
 def _find_task(plan_id: str, plan_tasks: list[SubTask]) -> SubTask | None:
